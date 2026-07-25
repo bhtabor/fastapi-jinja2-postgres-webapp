@@ -94,6 +94,28 @@ def test_select_organization_non_member(auth_client, test_organization):
     assert "selected_organization_id" not in response.headers.get("set-cookie", "")
 
 
+def test_select_organization_non_htmx_sets_cookie_and_redirects(
+    auth_client_owner, test_organization
+):
+    """Without htmx, selecting an organization redirects (PRG) and sets the cookie."""
+    response = auth_client_owner.post(
+        app.url_path_for("select_organization", org_id=test_organization.id),
+    )
+    assert response.status_code == 303
+    assert "dashboard" in response.headers.get("location", "")
+    assert "selected_organization_id" in response.headers.get("set-cookie", "")
+
+
+def test_select_organization_non_htmx_non_member(auth_client, test_organization):
+    """Without htmx, non-members are redirected without a cookie being set."""
+    response = auth_client.post(
+        app.url_path_for("select_organization", org_id=test_organization.id),
+    )
+    assert response.status_code == 303
+    assert "dashboard" in response.headers.get("location", "")
+    assert "selected_organization_id" not in response.headers.get("set-cookie", "")
+
+
 def test_dashboard_respects_org_cookie(
     auth_client_owner,
     session: Session,

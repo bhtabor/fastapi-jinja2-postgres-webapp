@@ -143,7 +143,7 @@ async def already_authenticated_error_handler(
         response.headers["HX-Redirect"] = str(request.url_for("read_dashboard"))
         return response
     return RedirectResponse(
-        url=app.url_path_for("read_dashboard"), status_code=status.HTTP_302_FOUND
+        url=app.url_path_for("read_dashboard"), status_code=status.HTTP_303_SEE_OTHER
     )
 
 

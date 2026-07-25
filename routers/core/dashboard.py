@@ -1,8 +1,10 @@
 from typing import Optional, List
 from fastapi import APIRouter, Depends, Request, Response
+from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlmodel import Session, select, col
 from utils.core.dependencies import get_user_with_relations, get_session
+from utils.core.htmx import is_htmx_request
 from utils.core.models import User, Organization
 from utils.app.enums import AppPermissions
 from utils.app.models import OrganizationResource
@@ -83,15 +85,19 @@ async def select_organization(
     user: User = Depends(get_user_with_relations),
 ):
     """Set the selected organization cookie and redirect back to dashboard."""
+    dashboard_url = str(request.url_for("read_dashboard"))
+    if is_htmx_request(request):
+        response: Response = Response(status_code=200)
+        response.headers["HX-Redirect"] = dashboard_url
+    else:
+        response = RedirectResponse(url=dashboard_url, status_code=303)
+
     # Verify user is a member of this organization
     org = next((o for o in user.organizations if o.id == org_id), None)
     if not org:
         # Fall back to dashboard without changing cookie
-        response = Response(status_code=200)
-        response.headers["HX-Redirect"] = str(request.url_for("read_dashboard"))
         return response
 
-    response = Response(status_code=200)
     response.set_cookie(
         key="selected_organization_id",
         value=str(org_id),
@@ -99,5 +105,4 @@ async def select_organization(
         samesite="strict",
         max_age=60 * 60 * 24 * 365,  # 1 year
     )
-    response.headers["HX-Redirect"] = str(request.url_for("read_dashboard"))
     return response
