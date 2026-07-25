@@ -240,5 +240,5 @@ class TestGetPagesRequireAuth:
 
     def test_authenticated_home_redirects_to_dashboard(self, auth_client_owner):
         response = auth_client_owner.get(_url("read_home"))
-        assert response.status_code == 302
+        assert response.status_code == 303
         assert "dashboard" in response.headers.get("location", "")
