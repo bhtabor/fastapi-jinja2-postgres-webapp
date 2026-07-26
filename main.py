@@ -22,13 +22,9 @@ from utils.core.dependencies import (
 )
 from utils.core.rate_limit import get_trusted_proxy_hosts
 from utils.core.csrf import (
-    CSRF_COOKIE_NAME,
-    UNSAFE_HTTP_METHODS,
-    csrf_enabled,
-    extract_submitted_csrf_token,
+    CSRF_SESSION_KEY,
+    enforce_csrf,
     generate_csrf_token,
-    set_csrf_cookie,
-    validate_csrf_token,
 )
 from utils.core.htmx import (
     is_htmx_request,
@@ -91,7 +87,9 @@ async def lifespan(app: FastAPI):
 
 
 # Initialize the FastAPI app
-app: FastAPI = FastAPI(lifespan=lifespan)
+# enforce_csrf is an app-level dependency (not middleware) so its form
+# parsing is cached on the route's Request instead of consuming the body.
+app: FastAPI = FastAPI(lifespan=lifespan, dependencies=[Depends(enforce_csrf)])
 
 trusted_proxy_hosts = get_trusted_proxy_hosts()
 if trusted_proxy_hosts:
@@ -119,20 +117,19 @@ async def flash_cookie_middleware(request: Request, call_next):
     return response
 
 
+# The CSRF token lives in the signed cookie session, so it is never
+# readable (or settable) by scripts or cross-site requests. Logging in
+# clears the session, which also rotates the token. This middleware only
+# issues the token; validation happens in the enforce_csrf app dependency.
 @app.middleware("http")
 async def csrf_middleware(request: Request, call_next):
-    token = request.cookies.get(CSRF_COOKIE_NAME) or generate_csrf_token()
+    token = request.session.get(CSRF_SESSION_KEY)
+    if not isinstance(token, str) or not token:
+        token = generate_csrf_token()
+        request.session[CSRF_SESSION_KEY] = token
     request.state.csrf_token = token
 
-    if csrf_enabled() and request.method in UNSAFE_HTTP_METHODS:
-        submitted = await extract_submitted_csrf_token(request)
-        if not validate_csrf_token(request, submitted):
-            return await csrf_error_handler(request, CsrfError())
-
-    response = await call_next(request)
-    if request.cookies.get(CSRF_COOKIE_NAME) != token:
-        set_csrf_cookie(response, token)
-    return response
+    return await call_next(request)
 
 
 # Session middleware is added last so it is OUTERMOST: the flash and CSRF

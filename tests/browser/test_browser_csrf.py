@@ -8,7 +8,6 @@ from playwright.sync_api import Page, expect
 
 from tests.browser.conftest import register_user
 from tests.browser.db_helpers import browser_csrf_db_session
-from utils.core.csrf import CSRF_COOKIE_NAME
 
 
 @pytest.fixture(scope="session")
@@ -92,14 +91,18 @@ def test_forgot_password_without_csrf_shows_error_toast(browser, live_server_csr
     context.close()
 
 
-def test_csrf_cookie_is_set_on_first_visit(browser, live_server_csrf: str):
+def test_csrf_token_not_exposed_in_a_readable_cookie(
+    browser, live_server_csrf: str
+):
+    """The token lives in the signed session cookie, not its own cookie."""
     context = browser.new_context(viewport={"width": 1280, "height": 720})
     page = context.new_page()
     page.goto(f"{live_server_csrf}/account/login")
-    cookies = context.cookies()
-    csrf_cookies = [c for c in cookies if c["name"] == CSRF_COOKIE_NAME]
-    assert len(csrf_cookies) == 1
-    assert csrf_cookies[0]["value"]
+    meta_token = page.get_attribute('meta[name="csrf-token"]', "content")
+    assert meta_token
+    cookie_names = {c["name"] for c in context.cookies()}
+    assert "csrf_token" not in cookie_names
+    assert "session" in cookie_names
     context.close()
 
 

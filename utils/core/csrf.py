@@ -3,11 +3,8 @@ import secrets
 from typing import Final
 
 from fastapi import Request
-from starlette.responses import Response
 
-from utils.core.auth import COOKIE_SECURE
-
-CSRF_COOKIE_NAME: Final = "csrf_token"
+CSRF_SESSION_KEY: Final = "csrf_token"
 CSRF_HEADER_NAME: Final = "x-csrf-token"
 CSRF_FORM_FIELD: Final = "csrf_token"
 UNSAFE_HTTP_METHODS: Final = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -25,17 +22,10 @@ def get_request_csrf_token(request: Request) -> str:
     token = getattr(request.state, "csrf_token", None)
     if isinstance(token, str) and token:
         return token
-    return request.cookies.get(CSRF_COOKIE_NAME) or generate_csrf_token()
-
-
-def set_csrf_cookie(response: Response, token: str) -> None:
-    response.set_cookie(
-        key=CSRF_COOKIE_NAME,
-        value=token,
-        httponly=False,
-        secure=COOKIE_SECURE,
-        samesite="strict",
-    )
+    token = request.session.get(CSRF_SESSION_KEY)
+    if isinstance(token, str) and token:
+        return token
+    return generate_csrf_token()
 
 
 def validate_csrf_token(request: Request, submitted_token: str | None) -> bool:
@@ -62,3 +52,19 @@ async def extract_submitted_csrf_token(request: Request) -> str | None:
         if isinstance(value, str):
             return value
     return None
+
+
+async def enforce_csrf(request: Request) -> None:
+    """App-level dependency validating the CSRF token on unsafe methods.
+
+    Runs as a dependency (not middleware) because it may parse the form
+    body: on the route's own Request instance the parse is cached, so the
+    route's Form(...) parameters read the same data instead of finding a
+    consumed body stream.
+    """
+    from exceptions.http_exceptions import CsrfError
+
+    if csrf_enabled() and request.method in UNSAFE_HTTP_METHODS:
+        submitted = await extract_submitted_csrf_token(request)
+        if not validate_csrf_token(request, submitted):
+            raise CsrfError()
