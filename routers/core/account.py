@@ -27,21 +27,17 @@ from utils.core.auth import (
     COMPILED_PASSWORD_PATTERN,
     HTML_PASSWORD_PATTERN,
     MAX_EMAILS_PER_ACCOUNT,
-    clear_auth_cookies,
-    create_access_token,
     create_recovery_token,
-    create_tracked_refresh_token,
     generate_recovery_url,
     get_password_hash,
-    oauth2_scheme_cookie,
-    revoke_all_refresh_tokens,
+    log_in_session,
+    log_out_session,
+    revoke_all_session_tokens,
     send_email_removed_notification,
     send_email_verification,
     send_email_verified_notification,
     send_primary_email_changed_notification,
     send_reset_email_task,
-    set_auth_cookies,
-    validate_token,
 )
 from utils.core.communication_preferences import (
     apply_communication_preferences,
@@ -71,7 +67,6 @@ from utils.core.models import (
     DataIntegrityError,
     Invitation,
     Organization,
-    RefreshToken,
     Role,
     User,
     UserRoleLink,
@@ -165,26 +160,14 @@ def validate_password_strength_and_match(
 
 @router.get("/logout", response_class=RedirectResponse)
 def logout(
-    tokens: tuple[str | None, str | None] = Depends(oauth2_scheme_cookie),
+    request: Request,
     session: Session = Depends(get_session),
 ):
     """
-    Log out a user by revoking their refresh token and clearing cookies.
+    Log out a user by deleting their session token and clearing the session.
     """
     response = RedirectResponse(url="/", status_code=303)
-    clear_auth_cookies(response)
-
-    _, refresh_token_value = tokens
-    if refresh_token_value:
-        decoded = validate_token(refresh_token_value, token_type="refresh")
-        if decoded and decoded.get("jti"):
-            db_token = session.exec(
-                select(RefreshToken).where(RefreshToken.jti == decoded["jti"])
-            ).first()
-            if db_token:
-                db_token.revoked = True
-                session.commit()
-
+    log_out_session(request, response, session)
     return response
 
 
@@ -436,9 +419,7 @@ def register(
     try:
         session.commit()
     except Exception:
-        logger.exception(
-            f"Error committing transaction during registration for {email}"
-        )
+        logger.exception(f"Error committing transaction during registration for {email}")
         session.rollback()
         # Use DataIntegrityError for commit failure
         raise DataIntegrityError(resource="Account/User registration")
@@ -448,25 +429,16 @@ def register(
     # We might need the user object refreshed too if process_invitation modified it directly
     # session.refresh(new_user) # Let's assume process_invitation only modifies the invitation object for now
 
-    # Create access token using the committed account's email
-    access_token = create_access_token(data={"sub": account.email, "fresh": True})
-    refresh_token = create_tracked_refresh_token(
-        account.id, account.email, session, persistent=False
-    )
-    session.commit()
-
-    # Set cookie — use HX-Redirect for HTMX, 303 for regular form submissions
+    # Log the new account in with a fresh session
+    # Use HX-Redirect for HTMX, 303 for regular form submissions
     if is_htmx_request(request):
         response = Response(status_code=200)
         response.headers["HX-Redirect"] = str(redirect_url)
     else:
         response = RedirectResponse(url=str(redirect_url), status_code=303)
-    set_auth_cookies(
-        response,
-        access_token,
-        refresh_token,
-        persistent=False,
-    )
+    assert account.id is not None
+    log_in_session(request, response, account.id, session)
+    session.commit()
 
     return response
 
@@ -558,106 +530,18 @@ def login(
             f"Standard login for account {account.email}. Redirecting to dashboard."
         )
 
-    # Create access token
+    # Log in with a fresh session; remember-me extends it past browser close
     assert account.id is not None
     persistent = remember == "on"
-    access_token = create_access_token(data={"sub": account.email, "fresh": True})
-    refresh_token = create_tracked_refresh_token(
-        account.id, account.email, session, persistent=persistent
-    )
-    session.commit()
 
-    # Set cookie — use HX-Redirect for HTMX, 303 for regular form submissions
+    # Use HX-Redirect for HTMX, 303 for regular form submissions
     if is_htmx_request(request):
         response = Response(status_code=200)
         response.headers["HX-Redirect"] = str(redirect_url)
     else:
         response = RedirectResponse(url=str(redirect_url), status_code=303)
-    set_auth_cookies(
-        response,
-        access_token,
-        refresh_token,
-        persistent=persistent,
-    )
-
-    return response
-
-
-# Updated refresh_token endpoint
-@router.post("/refresh", response_class=RedirectResponse)
-def refresh_token(
-    tokens: tuple[str | None, str | None] = Depends(oauth2_scheme_cookie),
-    session: Session = Depends(get_session),
-) -> RedirectResponse:
-    """
-    Refresh the access token using a valid refresh token.
-    """
-    _, refresh_token = tokens
-    if not refresh_token:
-        return RedirectResponse(url=router.url_path_for("read_login"), status_code=303)
-
-    decoded_token = validate_token(refresh_token, token_type="refresh")
-    if not decoded_token:
-        response = RedirectResponse(
-            url=router.url_path_for("read_login"), status_code=303
-        )
-        clear_auth_cookies(response)
-        return response
-
-    # Validate JTI server-side
-    jti = decoded_token.get("jti")
-    if not jti:
-        response = RedirectResponse(
-            url=router.url_path_for("read_login"), status_code=303
-        )
-        clear_auth_cookies(response)
-        return response
-
-    user_email = decoded_token.get("sub")
-    account = session.exec(
-        select(Account).where(Account.email == user_email)
-    ).one_or_none()
-    if not account:
-        return RedirectResponse(url=router.url_path_for("read_login"), status_code=303)
-
-    db_token = session.exec(select(RefreshToken).where(RefreshToken.jti == jti)).first()
-
-    if not db_token or db_token.account_id != account.id:
-        return RedirectResponse(url=router.url_path_for("read_login"), status_code=303)
-
-    assert account.id is not None
-    if db_token.revoked:
-        # Token reuse detected — revoke all tokens for this account
-        logger.warning(
-            f"Refresh token reuse detected for account {account.id} on /refresh endpoint. "
-            "Revoking all refresh tokens."
-        )
-        revoke_all_refresh_tokens(account.id, session)
-        session.commit()
-        response = RedirectResponse(
-            url=router.url_path_for("read_login"), status_code=303
-        )
-        clear_auth_cookies(response)
-        return response
-
-    # Revoke current token and issue new ones
-    db_token.revoked = True
-    persistent = bool(decoded_token.get("persistent", False))
-    new_access_token = create_access_token(data={"sub": account.email, "fresh": False})
-    new_refresh_token = create_tracked_refresh_token(
-        account.id, account.email, session, persistent=persistent
-    )
+    log_in_session(request, response, account.id, session, remember=persistent)
     session.commit()
-
-    response = RedirectResponse(
-        url=dashboard_router.url_path_for("read_dashboard"), status_code=303
-    )
-    set_auth_cookies(
-        response,
-        new_access_token,
-        new_refresh_token,
-        persistent=persistent,
-    )
 
     return response
 
@@ -731,16 +615,9 @@ def reset_password(
     session.commit()
     session.refresh(authorized_account)
 
-    revoke_all_refresh_tokens(authorized_account.id, session)
-
-    # Auto-login: issue new auth cookies so the user doesn't have to re-enter credentials
-    access_token = create_access_token(
-        data={"sub": authorized_account.email, "fresh": True}
-    )
-    refresh_token = create_tracked_refresh_token(
-        authorized_account.id, authorized_account.email, session, persistent=False
-    )
-    session.commit()
+    # Log out every device (the password just changed), then auto-login this
+    # one so the user doesn't have to re-enter credentials.
+    revoke_all_session_tokens(authorized_account.id, session)
 
     redirect_url = str(dashboard_router.url_path_for("read_dashboard"))
     message = "Password reset successfully."
@@ -751,12 +628,8 @@ def reset_password(
     else:
         response = RedirectResponse(url=redirect_url, status_code=303)
 
-    set_auth_cookies(
-        response,
-        access_token,
-        refresh_token,
-        persistent=False,
-    )
+    log_in_session(request, response, authorized_account.id, session)
+    session.commit()
     set_flash_cookie(response, message)
     return response
 
@@ -825,8 +698,8 @@ def recover_account(
     # Update Account.email
     account.email = recovery_token.email
 
-    # Revoke all refresh tokens
-    revoke_all_refresh_tokens(account.id, session)
+    # Log out every device
+    revoke_all_session_tokens(account.id, session)
 
     # Create a password reset token
     from utils.core.models import PasswordResetToken
@@ -1010,15 +883,8 @@ def promote_email(
     # Update Account.email
     account.email = target_email.email
 
-    # Revoke all refresh tokens
-    revoke_all_refresh_tokens(account.id, session)
-    session.commit()
-
-    # Issue new tokens with the new primary email
-    access_token = create_access_token(data={"sub": account.email, "fresh": True})
-    refresh_token = create_tracked_refresh_token(
-        account.id, account.email, session, persistent=False
-    )
+    # Log out every device; the current one gets a fresh session below
+    revoke_all_session_tokens(account.id, session)
     session.commit()
 
     # Create recovery token and send notification to the old primary
@@ -1036,12 +902,8 @@ def promote_email(
     else:
         response = RedirectResponse(url=str(profile_path), status_code=303)
     set_flash_cookie(response, "Primary email address updated.")
-    set_auth_cookies(
-        response,
-        access_token,
-        refresh_token,
-        persistent=False,
-    )
+    log_in_session(request, response, account.id, session)
+    session.commit()
     return response
 
 
