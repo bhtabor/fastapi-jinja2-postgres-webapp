@@ -1,6 +1,5 @@
 import logging
 from collections.abc import Generator
-from datetime import UTC, datetime
 
 from fastapi import Depends, Form, Query, Request
 from pydantic import EmailStr
@@ -15,18 +14,20 @@ from exceptions.http_exceptions import (
     PasswordValidationError,
 )
 from utils.core.auth import (
+    CONFIRM_EMAIL_CONTEXT,
+    RECOVERY_CONTEXT,
     REMEMBER_ME_COOKIE_NAME,
+    RESET_PASSWORD_CONTEXT,
     SESSION_TOKEN_KEY,
     get_account_by_session_token,
+    get_email_token_row,
     verify_password,
 )
 from utils.core.db import get_engine
 from utils.core.invitations import get_invitation_token_warning
 from utils.core.models import (
     Account,
-    AccountRecoveryToken,
-    EmailVerificationToken,
-    PasswordResetToken,
+    AccountToken,
     Role,
     User,
 )
@@ -51,7 +52,7 @@ def get_account_from_session(request: Request, session: Session) -> Account | No
     The signed session cookie carries an opaque token; its authority is the
     AccountToken row (context "session"). When the browser-lifetime session
     cookie is gone but a remember-me cookie is present, the session is
-    repopulated from it (phx.gen.auth's ensure_user_token behavior).
+    repopulated from it.
     """
     token = request.session.get(SESSION_TOKEN_KEY)
     if token:
@@ -183,83 +184,59 @@ def get_verified_account(
 
 def get_account_from_email_verification_token(
     token: str, session: Session
-) -> tuple[Account | None, EmailVerificationToken | None]:
+) -> tuple[Account | None, AccountToken | None]:
     """
-    Get account from an email verification token.
+    Get account from an email verification token. The token row's
+    ``sent_to`` is the address being verified.
 
     Returns:
-        Tuple of (account, token) if valid, or (None, None) if invalid
+        Tuple of (account, token row) if valid, or (None, None) if invalid
     """
-    result = session.exec(
-        select(Account, EmailVerificationToken).where(
-            EmailVerificationToken.token == token,
-            EmailVerificationToken.expires_at > datetime.now(UTC),
-            EmailVerificationToken.used == False,
-            EmailVerificationToken.account_id == Account.id,
-        )
-    ).first()
-
-    if not result:
+    row = get_email_token_row(token, CONFIRM_EMAIL_CONTEXT, session)
+    if not row:
         return None, None
-
-    account, verification_token = result
-    return account, verification_token
+    account = session.get(Account, row.account_id)
+    if not account:
+        return None, None
+    return account, row
 
 
 def get_account_from_recovery_token(
     token: str, session: Session
-) -> tuple[Account | None, AccountRecoveryToken | None]:
+) -> tuple[Account | None, AccountToken | None]:
     """
-    Get account from an account recovery token.
+    Get account from an account recovery token. The token row's
+    ``sent_to`` is the email address to restore.
 
     Returns:
-        Tuple of (account, token) if valid, or (None, None) if invalid
+        Tuple of (account, token row) if valid, or (None, None) if invalid
     """
-    result = session.exec(
-        select(Account, AccountRecoveryToken).where(
-            AccountRecoveryToken.token == token,
-            AccountRecoveryToken.expires_at > datetime.now(UTC),
-            AccountRecoveryToken.used == False,
-            AccountRecoveryToken.account_id == Account.id,
-        )
-    ).first()
-
-    if not result:
+    row = get_email_token_row(token, RECOVERY_CONTEXT, session)
+    if not row:
         return None, None
-
-    account, recovery_token = result
-    return account, recovery_token
+    account = session.get(Account, row.account_id)
+    if not account:
+        return None, None
+    return account, row
 
 
 def get_account_from_reset_token(
     email: str, token: str, session: Session
-) -> tuple[Account | None, PasswordResetToken | None]:
+) -> tuple[Account | None, AccountToken | None]:
     """
-    Get account from a password reset token.
-
-    Args:
-        email: Email address of the account
-        token: Password reset token
-        session: Database session
+    Get account from a password reset token, verifying it belongs to the
+    account with the given email.
 
     Returns:
-        Tuple of (account, token) if valid, or (None, None) if invalid
+        Tuple of (account, token row) if valid, or (None, None) if invalid
     """
-    result = session.exec(
-        select(Account, PasswordResetToken).where(
-            Account.email == email,
-            PasswordResetToken.token == token,
-            PasswordResetToken.expires_at > datetime.now(UTC),
-            PasswordResetToken.used == False,
-            PasswordResetToken.account_id == Account.id,
-        )
-    ).first()
-
-    if not result:
+    row = get_email_token_row(token, RESET_PASSWORD_CONTEXT, session)
+    if not row:
         return None, None
-
-    account, reset_token = result
-    return account, reset_token
+    account = session.get(Account, row.account_id)
+    if not account or account.email != email:
+        return None, None
+    return account, row
 
 
 def get_user_with_relations(
