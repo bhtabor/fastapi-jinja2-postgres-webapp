@@ -11,24 +11,22 @@ from utils.core.models import (
     User,
     AccountEmail,
     AccountRecoveryToken,
+    AccountToken,
     EmailVerificationToken,
     Invitation,
     Organization,
     PasswordResetToken,
-    RefreshToken,
     Account,
     Role,
     UserRoleLink,
 )
 from utils.app.models import OrganizationResource
 from utils.core.auth import (
-    create_access_token,
+    SESSION_TOKEN_CONTEXT,
     create_recovery_token,
-    create_refresh_token,
-    create_tracked_refresh_token,
     generate_recovery_url,
+    generate_session_token,
     verify_password,
-    validate_token,
     get_password_hash,
 )
 from utils.core.rate_limit import (
@@ -199,10 +197,8 @@ def test_login_endpoint(unauth_client: TestClient, test_account: Account):
     assert response.status_code == 303
     assert response.headers["location"] == str(app.url_path_for("read_dashboard"))
 
-    # Check if cookies are set
-    cookies = response.cookies
-    assert "access_token" in cookies
-    assert "refresh_token" in cookies
+    # The signed session cookie is set on login
+    assert "session" in response.cookies
 
 
 def test_login_with_remember_me_sets_max_age(
@@ -218,13 +214,11 @@ def test_login_with_remember_me_sets_max_age(
     )
     assert response.status_code == 303
     cookie_headers = response.headers.get_list("set-cookie")
-    auth_cookies = [
-        header
-        for header in cookie_headers
-        if header.startswith("access_token=") or header.startswith("refresh_token=")
+    remember_cookies = [
+        header for header in cookie_headers if header.startswith("remember_me=")
     ]
-    assert len(auth_cookies) == 2
-    assert all("Max-Age=" in header for header in auth_cookies)
+    assert len(remember_cookies) == 1
+    assert "Max-Age=" in remember_cookies[0]
 
 
 def test_login_without_remember_me_uses_session_cookies(
@@ -236,13 +230,12 @@ def test_login_without_remember_me_uses_session_cookies(
     )
     assert response.status_code == 303
     cookie_headers = response.headers.get_list("set-cookie")
-    auth_cookies = [
-        header
-        for header in cookie_headers
-        if header.startswith("access_token=") or header.startswith("refresh_token=")
+    assert not any(header.startswith("remember_me=") for header in cookie_headers)
+    session_cookies = [
+        header for header in cookie_headers if header.startswith("session=")
     ]
-    assert len(auth_cookies) == 2
-    assert all("Max-Age=" not in header for header in auth_cookies)
+    assert len(session_cookies) == 1
+    assert "Max-Age=" not in session_cookies[0]
 
 
 def test_login_with_non_on_remember_uses_session_cookies(
@@ -258,97 +251,7 @@ def test_login_with_non_on_remember_uses_session_cookies(
     )
     assert response.status_code == 303
     cookie_headers = response.headers.get_list("set-cookie")
-    auth_cookies = [
-        header
-        for header in cookie_headers
-        if header.startswith("access_token=") or header.startswith("refresh_token=")
-    ]
-    assert len(auth_cookies) == 2
-    assert all("Max-Age=" not in header for header in auth_cookies)
-
-
-def test_refresh_token_endpoint(auth_client: TestClient, test_account: Account):
-    # Override just the access token to be expired, keeping the valid refresh token
-    expired_access_token = create_access_token(
-        {"sub": test_account.email}, timedelta(minutes=-10)
-    )
-    auth_client.cookies.set("access_token", expired_access_token)
-
-    response = auth_client.post(
-        app.url_path_for("refresh_token"),
-    )
-    assert response.status_code == 303
-    assert response.headers["location"] == str(app.url_path_for("read_dashboard"))
-
-    # Check for new tokens in headers
-    cookie_headers = response.headers.get_list("set-cookie")
-    assert any("access_token=" in cookie for cookie in cookie_headers)
-    assert any("refresh_token=" in cookie for cookie in cookie_headers)
-
-    # Get the new access token from headers for validation
-    access_token_cookie = next(
-        cookie for cookie in cookie_headers if "access_token=" in cookie
-    )
-    new_access_token = access_token_cookie.split(";")[0].split("=")[1]
-
-    # Verify new access token is valid
-    decoded = validate_token(new_access_token, "access")
-    assert decoded is not None
-    assert decoded["sub"] == test_account.email
-
-
-def test_refresh_token_endpoint_preserves_persistent_max_age(
-    session: Session, test_account: Account, test_user: User
-) -> None:
-    refresh_jwt = create_tracked_refresh_token(
-        test_account.id, test_account.email, session, persistent=True
-    )
-    session.commit()
-
-    client = TestClient(app, follow_redirects=False)
-    expired_access_token = create_access_token(
-        {"sub": test_account.email}, timedelta(minutes=-10)
-    )
-    client.cookies.set("access_token", expired_access_token)
-    client.cookies.set("refresh_token", refresh_jwt)
-
-    response = client.post(app.url_path_for("refresh_token"))
-    assert response.status_code == 303
-
-    auth_cookies = [
-        header
-        for header in response.headers.get_list("set-cookie")
-        if header.startswith("access_token=") or header.startswith("refresh_token=")
-    ]
-    assert len(auth_cookies) == 2
-    assert all("Max-Age=" in header for header in auth_cookies)
-
-
-def test_refresh_token_endpoint_preserves_session_cookies(
-    session: Session, test_account: Account, test_user: User
-) -> None:
-    refresh_jwt = create_tracked_refresh_token(
-        test_account.id, test_account.email, session, persistent=False
-    )
-    session.commit()
-
-    client = TestClient(app, follow_redirects=False)
-    expired_access_token = create_access_token(
-        {"sub": test_account.email}, timedelta(minutes=-10)
-    )
-    client.cookies.set("access_token", expired_access_token)
-    client.cookies.set("refresh_token", refresh_jwt)
-
-    response = client.post(app.url_path_for("refresh_token"))
-    assert response.status_code == 303
-
-    auth_cookies = [
-        header
-        for header in response.headers.get_list("set-cookie")
-        if header.startswith("access_token=") or header.startswith("refresh_token=")
-    ]
-    assert len(auth_cookies) == 2
-    assert all("Max-Age=" not in header for header in auth_cookies)
+    assert not any(header.startswith("remember_me=") for header in cookie_headers)
 
 
 def test_password_reset_flow(
@@ -407,15 +310,14 @@ def test_logout_endpoint(auth_client: TestClient):
     assert response.status_code == 303
     assert response.headers["location"] == "/"
 
-    # Check for cookie deletion in headers
+    # The remember-me cookie is deleted and the (now empty) session cookie
+    # is rewritten by the session middleware.
     cookie_headers = response.headers.get_list("set-cookie")
     assert any(
-        "access_token=" in cookie and "Max-Age=0" in cookie for cookie in cookie_headers
-    )
-    assert any(
-        "refresh_token=" in cookie and "Max-Age=0" in cookie
+        cookie.startswith("remember_me=") and "Max-Age=0" in cookie
         for cookie in cookie_headers
     )
+    assert any(cookie.startswith("session=") for cookie in cookie_headers)
 
 
 def test_delete_account_removes_sole_user_organization_and_owned_resources(
@@ -697,10 +599,9 @@ def test_password_reset_auto_logs_in_and_shows_flash(
     dashboard_path = str(app.url_path_for("read_dashboard"))
     assert dashboard_path in response.headers["location"]
 
-    # Should set auth cookies
+    # Should set a session cookie (auto-login)
     cookie_headers = response.headers.get_list("set-cookie")
-    assert any("access_token=" in c for c in cookie_headers)
-    assert any("refresh_token=" in c for c in cookie_headers)
+    assert any(header.startswith("session=") for header in cookie_headers)
 
     # Should set a flash cookie with success message
     assert any("flash_message=" in c for c in cookie_headers)
@@ -709,14 +610,9 @@ def test_password_reset_auto_logs_in_and_shows_flash(
 def test_password_reset_revokes_existing_sessions(
     unauth_client: TestClient, session: Session, test_account: Account
 ):
-    """Password reset revokes all existing refresh tokens before auto-login."""
-    attacker_session = RefreshToken(
-        account_id=test_account.id,
-        expires_at=datetime.now(UTC) + timedelta(days=30),
-    )
-    session.add(attacker_session)
+    """Password reset deletes all existing session tokens before auto-login."""
+    attacker_token = generate_session_token(test_account.id, session)
     session.commit()
-    session.refresh(attacker_session)
 
     reset_token = PasswordResetToken(account_id=test_account.id)
     session.add(reset_token)
@@ -734,16 +630,16 @@ def test_password_reset_revokes_existing_sessions(
     )
     assert response.status_code == 303
 
-    session.refresh(attacker_session)
-    assert attacker_session.revoked is True
-
-    active_tokens = session.exec(
-        select(RefreshToken).where(
-            RefreshToken.account_id == test_account.id,
-            RefreshToken.revoked == False,  # noqa: E712
+    session.expire_all()
+    remaining = session.exec(
+        select(AccountToken).where(
+            AccountToken.account_id == test_account.id,
+            AccountToken.context == SESSION_TOKEN_CONTEXT,
         )
     ).all()
-    assert len(active_tokens) == 1
+    # The attacker's token is gone; only the auto-login session remains.
+    assert len(remaining) == 1
+    assert remaining[0].token != attacker_token
 
 
 def test_password_reset_after_recovery_auto_logs_in(
@@ -820,10 +716,9 @@ def test_password_reset_after_recovery_auto_logs_in(
     dashboard_path = str(app.url_path_for("read_dashboard"))
     assert dashboard_path in reset_response.headers["location"]
 
-    # Should have auth cookies
+    # Should have a session cookie (auto-login)
     cookie_headers = reset_response.headers.get_list("set-cookie")
-    assert any("access_token=" in c for c in cookie_headers)
-    assert any("refresh_token=" in c for c in cookie_headers)
+    assert any(header.startswith("session=") for header in cookie_headers)
 
     # Should have flash message
     assert any("flash_message=" in c for c in cookie_headers)
@@ -1028,10 +923,10 @@ def test_forgot_password_email_rate_limit(
 # --- Refresh Token Security Tests ---
 
 
-def test_register_creates_tracked_refresh_token(
+def test_register_creates_session_token(
     unauth_client: TestClient, session: Session
 ):
-    """Registration creates a RefreshToken record in the database."""
+    """Registration creates a session AccountToken row in the database."""
     response = unauth_client.post(
         app.url_path_for("register"),
         data={
@@ -1049,16 +944,18 @@ def test_register_creates_tracked_refresh_token(
     assert account is not None
 
     db_tokens = session.exec(
-        select(RefreshToken).where(RefreshToken.account_id == account.id)
+        select(AccountToken).where(
+            AccountToken.account_id == account.id,
+            AccountToken.context == SESSION_TOKEN_CONTEXT,
+        )
     ).all()
     assert len(db_tokens) == 1
-    assert db_tokens[0].revoked is False
 
 
-def test_login_creates_tracked_refresh_token(
+def test_login_creates_session_token(
     unauth_client: TestClient, session: Session, test_account: Account, test_user: User
 ):
-    """Login creates a RefreshToken record in the database."""
+    """Login creates a session AccountToken row in the database."""
     response = unauth_client.post(
         app.url_path_for("login"),
         data={"email": test_account.email, "password": "Test123!@#"},
@@ -1066,222 +963,36 @@ def test_login_creates_tracked_refresh_token(
     assert response.status_code == 303
 
     db_tokens = session.exec(
-        select(RefreshToken).where(RefreshToken.account_id == test_account.id)
+        select(AccountToken).where(
+            AccountToken.account_id == test_account.id,
+            AccountToken.context == SESSION_TOKEN_CONTEXT,
+        )
     ).all()
     assert len(db_tokens) >= 1
-    assert any(not t.revoked for t in db_tokens)
 
 
-def test_logout_revokes_refresh_token(
+def test_logout_deletes_session_token(
     auth_client: TestClient, session: Session, test_account: Account
 ):
-    """Logout revokes the refresh token server-side."""
-    # Get existing tokens before logout
+    """Logout deletes the session token server-side."""
     db_tokens_before = session.exec(
-        select(RefreshToken).where(
-            RefreshToken.account_id == test_account.id,
-            RefreshToken.revoked == False,  # noqa: E712
+        select(AccountToken).where(
+            AccountToken.account_id == test_account.id,
+            AccountToken.context == SESSION_TOKEN_CONTEXT,
         )
     ).all()
     assert len(db_tokens_before) >= 1
 
     auth_client.get(app.url_path_for("logout"))
 
-    # Verify the token was revoked
     session.expire_all()
-    active_tokens = session.exec(
-        select(RefreshToken).where(
-            RefreshToken.account_id == test_account.id,
-            RefreshToken.revoked == False,  # noqa: E712
+    remaining = session.exec(
+        select(AccountToken).where(
+            AccountToken.account_id == test_account.id,
+            AccountToken.context == SESSION_TOKEN_CONTEXT,
         )
     ).all()
-    assert len(active_tokens) == 0
-
-
-def test_refresh_endpoint_rotates_token(
-    auth_client: TestClient, session: Session, test_account: Account
-):
-    """The /refresh endpoint revokes the old token and issues a new one."""
-    # Expire the access token so the refresh endpoint works
-    expired_access_token = create_access_token(
-        {"sub": test_account.email}, timedelta(minutes=-10)
-    )
-    auth_client.cookies.set("access_token", expired_access_token)
-
-    # Count active tokens before
-    active_before = session.exec(
-        select(RefreshToken).where(
-            RefreshToken.account_id == test_account.id,
-            RefreshToken.revoked == False,  # noqa: E712
-        )
-    ).all()
-    assert len(active_before) == 1
-    old_jti = active_before[0].jti
-
-    response = auth_client.post(app.url_path_for("refresh_token"))
-    assert response.status_code == 303
-
-    # Old token should be revoked, new one should exist
-    session.expire_all()
-    old_token = session.exec(
-        select(RefreshToken).where(RefreshToken.jti == old_jti)
-    ).first()
-    assert old_token is not None
-    assert old_token.revoked is True
-
-    active_after = session.exec(
-        select(RefreshToken).where(
-            RefreshToken.account_id == test_account.id,
-            RefreshToken.revoked == False,  # noqa: E712
-        )
-    ).all()
-    assert len(active_after) == 1
-    assert active_after[0].jti != old_jti
-
-
-def test_refresh_reuse_detection_revokes_all_tokens(
-    unauth_client: TestClient, session: Session, test_account: Account, test_user: User
-):
-    """Replaying a revoked refresh token revokes ALL tokens for that account."""
-    # Create a tracked refresh token and immediately revoke it (simulating prior use)
-    refresh_jwt = create_tracked_refresh_token(
-        test_account.id, test_account.email, session, persistent=True
-    )
-    session.commit()
-
-    db_token = session.exec(
-        select(RefreshToken).where(
-            RefreshToken.account_id == test_account.id,
-            RefreshToken.revoked == False,  # noqa: E712
-        )
-    ).first()
-    assert db_token is not None
-    db_token.revoked = True
-
-    # Create a second active token (simulating the legitimate new token)
-    create_tracked_refresh_token(test_account.id, test_account.email, session)
-    session.commit()
-
-    # Replay the revoked token via the /refresh endpoint
-    client = TestClient(app, follow_redirects=False)
-    client.cookies.set("refresh_token", refresh_jwt)
-
-    response = client.post(app.url_path_for("refresh_token"))
-
-    # Should redirect to login (denied)
-    assert response.status_code == 303
-    assert "login" in response.headers["location"]
-
-    # ALL tokens for this account should now be revoked
-    session.expire_all()
-    active_tokens = session.exec(
-        select(RefreshToken).where(
-            RefreshToken.account_id == test_account.id,
-            RefreshToken.revoked == False,  # noqa: E712
-        )
-    ).all()
-    assert len(active_tokens) == 0
-
-
-def test_legacy_refresh_token_without_jti_rejected(
-    unauth_client: TestClient, session: Session, test_account: Account, test_user: User
-):
-    """A refresh token without a JTI (pre-migration) is rejected."""
-    import uuid
-
-    # Create a legacy-style token without jti by using create_refresh_token with a jti
-    # but NOT storing it in the DB — simulating a pre-migration token
-    legacy_token = create_refresh_token(
-        data={"sub": test_account.email},
-        jti=str(uuid.uuid4()),  # has jti in JWT but no DB record
-    )
-
-    client = TestClient(app, follow_redirects=False)
-    client.cookies.set("refresh_token", legacy_token)
-
-    response = client.post(app.url_path_for("refresh_token"))
-
-    # Should redirect to login (no DB record for this JTI)
-    assert response.status_code == 303
-    assert "login" in response.headers["location"]
-
-
-def test_automatic_token_refresh_via_dependency(
-    session: Session, test_account: Account, test_user: User
-):
-    """When access token expires, the dependency auto-refreshes using the refresh token."""
-    # Create a tracked refresh token
-    refresh_jwt = create_tracked_refresh_token(
-        test_account.id, test_account.email, session, persistent=True
-    )
-    session.commit()
-
-    # Create an expired access token
-    expired_access = create_access_token(
-        {"sub": test_account.email}, timedelta(minutes=-10)
-    )
-
-    client = TestClient(app, follow_redirects=False)
-    client.cookies.set("access_token", expired_access)
-    client.cookies.set("refresh_token", refresh_jwt)
-
-    # Hit an authenticated endpoint — should trigger NeedsNewTokens -> 307 redirect
-    response = client.get(app.url_path_for("read_dashboard"))
-
-    # The middleware catches NeedsNewTokens and redirects with new cookies
-    assert response.status_code == 307
-
-    cookie_headers = response.headers.get_list("set-cookie")
-    auth_cookies = [
-        header
-        for header in cookie_headers
-        if header.startswith("access_token=") or header.startswith("refresh_token=")
-    ]
-    assert len(auth_cookies) == 2
-    assert all("Max-Age=" in header for header in auth_cookies)
-
-    # Old refresh token should be revoked
-    session.expire_all()
-    active_tokens = session.exec(
-        select(RefreshToken).where(
-            RefreshToken.account_id == test_account.id,
-            RefreshToken.revoked == False,  # noqa: E712
-        )
-    ).all()
-    # Should have exactly 1 active token (the new one)
-    assert len(active_tokens) == 1
-
-
-def test_automatic_token_refresh_preserves_session_cookies(
-    session: Session, test_account: Account, test_user: User
-) -> None:
-    """Silent rotation should keep session cookies when the refresh token is not persistent."""
-    refresh_jwt = create_tracked_refresh_token(
-        test_account.id, test_account.email, session, persistent=False
-    )
-    session.commit()
-
-    expired_access = create_access_token(
-        {"sub": test_account.email}, timedelta(minutes=-10)
-    )
-
-    client = TestClient(app, follow_redirects=False)
-    client.cookies.set("access_token", expired_access)
-    client.cookies.set("refresh_token", refresh_jwt)
-
-    response = client.get(app.url_path_for("read_dashboard"))
-    assert response.status_code == 307
-
-    auth_cookies = [
-        header
-        for header in response.headers.get_list("set-cookie")
-        if header.startswith("access_token=") or header.startswith("refresh_token=")
-    ]
-    assert len(auth_cookies) == 2
-    assert all("Max-Age=" not in header for header in auth_cookies)
-
-
-# --- Add Email Tests ---
+    assert len(remaining) == 0
 
 
 def test_add_email_sends_verification(
@@ -1656,7 +1367,7 @@ def test_promote_email_swaps_primary(
     assert test_account_email.is_primary is False
 
 
-def test_promote_email_reissues_auth_cookies_with_strict_samesite(
+def test_promote_email_issues_fresh_session_cookie(
     auth_client: TestClient,
     test_account: Account,
     test_account_email,
@@ -1680,9 +1391,10 @@ def test_promote_email_reissues_auth_cookies_with_strict_samesite(
     )
 
     cookie_headers = response.headers.get_list("set-cookie")
-    auth_cookies = [header for header in cookie_headers if "access_token=" in header]
-    assert auth_cookies
-    assert all("samesite=strict" in header.lower() for header in auth_cookies)
+    session_cookies = [
+        header for header in cookie_headers if header.startswith("session=")
+    ]
+    assert session_cookies
 
 
 def test_promote_email_updates_account_email_field(
@@ -1714,14 +1426,14 @@ def test_promote_email_updates_account_email_field(
     assert test_account.email == "newprimary@example.com"
 
 
-def test_promote_email_revokes_refresh_tokens(
+def test_promote_email_revokes_other_sessions(
     auth_client: TestClient,
     test_account: Account,
     test_account_email,
     session: Session,
     mock_resend_send,
 ):
-    """Test that all refresh tokens are revoked and new ones issued."""
+    """All prior session tokens are deleted; the current client gets a fresh one."""
     secondary = AccountEmail(
         account_id=test_account.id,
         email="promoted@example.com",
@@ -1739,10 +1451,16 @@ def test_promote_email_revokes_refresh_tokens(
     )
     assert response.status_code == 303
 
-    # New cookies should be set
-    cookies = response.cookies
-    assert "access_token" in cookies
-    assert "refresh_token" in cookies
+    # A fresh session cookie is set, and exactly one session row remains
+    assert "session" in response.cookies
+    session.expire_all()
+    remaining = session.exec(
+        select(AccountToken).where(
+            AccountToken.account_id == test_account.id,
+            AccountToken.context == SESSION_TOKEN_CONTEXT,
+        )
+    ).all()
+    assert len(remaining) == 1
 
 
 def test_promote_email_sends_notification_to_old_primary(
@@ -2415,20 +2133,22 @@ def test_recover_account_removes_attacker_emails(
 def test_recover_account_revokes_all_sessions(
     unauth_client: TestClient, session: Session
 ):
-    """Test that recovery revokes all refresh tokens."""
+    """Test that recovery deletes all session tokens."""
     account, recovery_token, _ = _setup_compromised_account(session)
 
-    # Create a refresh token for the account
-    rt = RefreshToken(
-        account_id=account.id, expires_at=datetime.now(UTC) + timedelta(days=30)
-    )
-    session.add(rt)
+    token = generate_session_token(account.id, session)
     session.commit()
 
     _submit_account_recovery(unauth_client, recovery_token.token)
 
-    session.refresh(rt)
-    assert rt.revoked is True
+    session.expire_all()
+    remaining = session.exec(
+        select(AccountToken).where(
+            AccountToken.token == token,
+            AccountToken.context == SESSION_TOKEN_CONTEXT,
+        )
+    ).all()
+    assert remaining == []
 
 
 def test_recover_account_generates_password_reset_token(

@@ -1,24 +1,24 @@
 # utils.core.py
 import os
 import re
-import jwt
+import secrets
 import uuid
 import logging
 import resend
-from sqlmodel import Session, select
+from sqlmodel import Session, select, delete
 from bcrypt import gensalt, hashpw, checkpw
 from datetime import UTC, datetime, timedelta
-from typing import Literal, Optional
+from typing import Optional
 from jinja2.environment import Template
 from fastapi.templating import Jinja2Templates
-from fastapi import Cookie
+from fastapi import Request
 from starlette.responses import Response
 from utils.core.db import create_engine, get_connection_url
 from utils.core.models import (
     AccountRecoveryToken,
+    AccountToken,
     EmailVerificationToken,
     PasswordResetToken,
-    RefreshToken,
     Account,
 )
 
@@ -32,13 +32,14 @@ logger.addHandler(logging.StreamHandler())
 
 templates = Jinja2Templates(directory="templates")
 COOKIE_SECURE = os.getenv("BASE_URL", "http://localhost:8000").startswith("https")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
-REFRESH_TOKEN_EXPIRE_DAYS = 30
-SESSION_REFRESH_TOKEN_EXPIRE_HOURS = 12
 
-ACCESS_TOKEN_COOKIE_NAME = "access_token"
-REFRESH_TOKEN_COOKIE_NAME = "refresh_token"
+# Session authentication (modeled on phx.gen.auth): the signed session
+# cookie carries an opaque token whose authority is an AccountToken row.
+SESSION_TOKEN_KEY = "account_token"
+SESSION_TOKEN_CONTEXT = "session"
+SESSION_VALIDITY_DAYS = 14
+REMEMBER_ME_COOKIE_NAME = "remember_me"
+REMEMBER_ME_MAX_AGE = SESSION_VALIDITY_DAYS * 24 * 60 * 60
 PASSWORD_PATTERN_COMPONENTS = [
     r"(?=.*\d)",  # At least one digit
     r"(?=.*[a-z])",  # At least one lowercase letter
@@ -92,64 +93,6 @@ HTML_PASSWORD_PATTERN = "".join(
 # --- Helpers ---
 
 
-# Define the oauth2 scheme to get the token from the cookie
-def oauth2_scheme_cookie(
-    access_token: Optional[str] = Cookie(None, alias=ACCESS_TOKEN_COOKIE_NAME),
-    refresh_token: Optional[str] = Cookie(None, alias=REFRESH_TOKEN_COOKIE_NAME),
-) -> tuple[Optional[str], Optional[str]]:
-    return access_token, refresh_token
-
-
-def auth_cookie_max_ages(*, persistent: bool) -> tuple[Optional[int], Optional[int]]:
-    """Return (access_max_age, refresh_max_age) in seconds; None means session cookie."""
-    if not persistent:
-        return None, None
-    return (
-        ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
-    )
-
-
-def set_auth_cookies(
-    response: Response,
-    access_token: str,
-    refresh_token: str,
-    *,
-    persistent: bool,
-    samesite: Literal["lax", "strict", "none"] = "strict",
-) -> None:
-    """Set httponly auth cookies with session or persistent lifetime."""
-    access_max_age, refresh_max_age = auth_cookie_max_ages(persistent=persistent)
-    response.set_cookie(
-        key=ACCESS_TOKEN_COOKIE_NAME,
-        value=access_token,
-        httponly=True,
-        secure=COOKIE_SECURE,
-        samesite=samesite,
-        max_age=access_max_age,
-    )
-    response.set_cookie(
-        key=REFRESH_TOKEN_COOKIE_NAME,
-        value=refresh_token,
-        httponly=True,
-        secure=COOKIE_SECURE,
-        samesite=samesite,
-        max_age=refresh_max_age,
-    )
-
-
-def clear_auth_cookies(response: Response) -> None:
-    response.delete_cookie(ACCESS_TOKEN_COOKIE_NAME)
-    response.delete_cookie(REFRESH_TOKEN_COOKIE_NAME)
-
-
-def refresh_token_is_persistent(refresh_token: str) -> bool:
-    decoded = validate_token(refresh_token, token_type="refresh")
-    if decoded is None:
-        return False
-    return bool(decoded.get("persistent", False))
-
-
 def get_password_hash(password: str) -> str:
     """
     Hash a password using bcrypt with a random salt
@@ -169,100 +112,114 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return checkpw(password_bytes, hashed_bytes)
 
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    to_encode = data.copy()
-    to_encode.update({"type": "access"})
-    if expires_delta:
-        expire = datetime.now(UTC) + expires_delta
-    else:
-        expire = datetime.now(UTC) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, os.getenv("SECRET_KEY"), algorithm=ALGORITHM)
-    return encoded_jwt
+# --- Session authentication ---
 
 
-def create_refresh_token(
-    data: dict, jti: str, expires_delta: Optional[timedelta] = None
-) -> str:
-    to_encode = data.copy()
-    to_encode.update({"type": "refresh", "jti": jti})
-    if expires_delta:
-        expire = datetime.now(UTC) + expires_delta
-    else:
-        expire = datetime.now(UTC) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, os.getenv("SECRET_KEY"), algorithm=ALGORITHM)
-    return encoded_jwt
+def generate_session_token(account_id: int, session: Session) -> str:
+    """Create a session AccountToken row and return the raw token.
 
-
-def create_tracked_refresh_token(
-    account_id: int,
-    email: str,
-    session: Session,
-    *,
-    persistent: bool = False,
-) -> str:
-    jti = str(uuid.uuid4())
-    if persistent:
-        expires_delta = timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
-    else:
-        expires_delta = timedelta(hours=SESSION_REFRESH_TOKEN_EXPIRE_HOURS)
-    expires_at = datetime.now(UTC) + expires_delta
-    db_token = RefreshToken(
-        account_id=account_id,
-        jti=jti,
-        expires_at=expires_at,
-    )
-    session.add(db_token)
-    token = create_refresh_token(
-        data={"sub": email, "persistent": persistent},
-        jti=jti,
-        expires_delta=expires_delta,
+    Session tokens are stored raw (they are random and their exposure is
+    bounded by the validity window); email-delivered token kinds should be
+    stored hashed instead. Does NOT commit — caller is responsible.
+    """
+    token = secrets.token_urlsafe(32)
+    session.add(
+        AccountToken(
+            account_id=account_id, token=token, context=SESSION_TOKEN_CONTEXT
+        )
     )
     return token
 
 
-def revoke_all_refresh_tokens(account_id: int, session: Session) -> None:
-    tokens = session.exec(
-        select(RefreshToken).where(
-            RefreshToken.account_id == account_id,
-            RefreshToken.revoked == False,  # noqa: E712
+def get_account_by_session_token(token: str, session: Session) -> Optional[Account]:
+    """Return the account a valid, unexpired session token belongs to."""
+    cutoff = datetime.now(UTC) - timedelta(days=SESSION_VALIDITY_DAYS)
+    result = session.exec(
+        select(Account, AccountToken).where(
+            AccountToken.token == token,
+            AccountToken.context == SESSION_TOKEN_CONTEXT,
+            AccountToken.inserted_at > cutoff,
+            AccountToken.account_id == Account.id,
         )
-    ).all()
-    for token in tokens:
-        token.revoked = True
+    ).first()
+    return result[0] if result else None
 
 
-def cleanup_expired_refresh_tokens(session: Session) -> int:
+def delete_session_token(token: str, session: Session) -> None:
+    session.exec(
+        delete(AccountToken).where(
+            AccountToken.token == token,  # ty: ignore[invalid-argument-type]
+            AccountToken.context == SESSION_TOKEN_CONTEXT,
+        )
+    )
+
+
+def revoke_all_session_tokens(account_id: int, session: Session) -> None:
+    """Delete every session token for the account (logs out all devices)."""
+    session.exec(
+        delete(AccountToken).where(
+            AccountToken.account_id == account_id,  # ty: ignore[invalid-argument-type]
+            AccountToken.context == SESSION_TOKEN_CONTEXT,
+        )
+    )
+
+
+def log_in_session(
+    request: Request,
+    response: Response,
+    account_id: int,
+    session: Session,
+    *,
+    remember: bool = False,
+) -> str:
+    """Log the account in: fresh token row, renewed cookie session.
+
+    The session dict is cleared before storing the new token to prevent
+    session fixation. With ``remember``, the token is also written to a
+    long-lived remember-me cookie that the auth dependency falls back to
+    when the (browser-lifetime) session cookie is gone.
+    """
+    token = generate_session_token(account_id, session)
+    request.session.clear()
+    request.session[SESSION_TOKEN_KEY] = token
+    if remember:
+        response.set_cookie(
+            key=REMEMBER_ME_COOKIE_NAME,
+            value=token,
+            httponly=True,
+            secure=COOKIE_SECURE,
+            samesite="lax",
+            max_age=REMEMBER_ME_MAX_AGE,
+        )
+    return token
+
+
+def log_out_session(request: Request, response: Response, session: Session) -> None:
+    """Log out: delete the token row, clear the session, drop remember-me."""
+    token = request.session.get(SESSION_TOKEN_KEY) or request.cookies.get(
+        REMEMBER_ME_COOKIE_NAME
+    )
+    if token:
+        delete_session_token(token, session)
+        session.commit()
+    request.session.clear()
+    response.delete_cookie(REMEMBER_ME_COOKIE_NAME)
+
+
+def cleanup_expired_session_tokens(session: Session) -> int:
+    """Delete expired session token rows; returns the number removed."""
+    cutoff = datetime.now(UTC) - timedelta(days=SESSION_VALIDITY_DAYS)
     expired = session.exec(
-        select(RefreshToken).where(RefreshToken.expires_at < datetime.now(UTC))
+        select(AccountToken).where(
+            AccountToken.context == SESSION_TOKEN_CONTEXT,
+            AccountToken.inserted_at <= cutoff,
+        )
     ).all()
     count = len(expired)
     for token in expired:
         session.delete(token)
     session.commit()
     return count
-
-
-def validate_token(token: str, token_type: str = "access") -> Optional[dict]:
-    try:
-        decoded_token = jwt.decode(
-            token, os.getenv("SECRET_KEY"), algorithms=[ALGORITHM]
-        )
-
-        # Check if the token has expired
-        if decoded_token["exp"] < datetime.now(UTC).timestamp():
-            return None
-
-        # Optional: Add additional checks specific to each token type
-        if token_type == "refresh" and "refresh" not in decoded_token.get("type", ""):
-            return None
-        elif token_type == "access" and "access" not in decoded_token.get("type", ""):
-            return None
-
-        return decoded_token
-    except jwt.PyJWTError:
-        return None
 
 
 def generate_password_reset_url(email: str, token: str) -> str:

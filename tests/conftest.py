@@ -22,9 +22,9 @@ from utils.core.models import (
     Invitation,
 )
 from utils.core.auth import (
+    SESSION_TOKEN_KEY,
+    generate_session_token,
     get_password_hash,
-    create_access_token,
-    create_tracked_refresh_token,
 )
 from main import app
 from datetime import datetime, UTC, timedelta
@@ -141,6 +141,26 @@ def test_account_email(session: Session, test_account: Account) -> AccountEmail:
     return account_email
 
 
+def _signed_session_cookie(data: dict) -> str:
+    """Build a session cookie value the way Starlette SessionMiddleware does."""
+    import base64
+    import json
+
+    import itsdangerous
+
+    signer = itsdangerous.TimestampSigner(str(os.environ["SECRET_KEY"]))
+    payload = base64.b64encode(json.dumps(data).encode("utf-8"))
+    return signer.sign(payload).decode("utf-8")
+
+
+def set_session_cookie(client: TestClient, session: Session, account) -> None:
+    """Authenticate a TestClient: session token row + signed session cookie."""
+    assert account.id is not None
+    token = generate_session_token(account.id, session)
+    session.commit()
+    client.cookies.set("session", _signed_session_cookie({SESSION_TOKEN_KEY: token}))
+
+
 @pytest.fixture
 def unauth_client(session: Session) -> Generator[TestClient, None, None]:
     """
@@ -158,17 +178,7 @@ def auth_client(
     Provides a TestClient instance with valid authentication tokens.
     """
     client = TestClient(app, follow_redirects=False)
-
-    # Create and set valid tokens
-    access_token = create_access_token({"sub": test_account.email})
-    refresh_token = create_tracked_refresh_token(
-        test_account.id, test_account.email, session
-    )
-    session.commit()
-
-    client.cookies.set("access_token", access_token)
-    client.cookies.set("refresh_token", refresh_token)
-
+    set_session_cookie(client, session, test_account)
     yield client
 
 
@@ -313,20 +323,8 @@ def auth_client_owner(
     """Provides a TestClient authenticated as the organization owner"""
     client = TestClient(app, follow_redirects=False)
 
-    # Initialize tokens
-    access_token = ""
-    refresh_token = ""
-
-    # Create and set valid tokens
     if org_owner.account:
-        access_token = create_access_token({"sub": org_owner.account.email})
-        refresh_token = create_tracked_refresh_token(
-            org_owner.account.id, org_owner.account.email, session
-        )
-        session.commit()
-
-    client.cookies.set("access_token", access_token)
-    client.cookies.set("refresh_token", refresh_token)
+        set_session_cookie(client, session, org_owner.account)
 
     yield client
 
@@ -338,20 +336,8 @@ def auth_client_admin(
     """Provides a TestClient authenticated as an organization administrator"""
     client = TestClient(app, follow_redirects=False)
 
-    # Initialize tokens
-    access_token = ""
-    refresh_token = ""
-
-    # Create and set valid tokens
     if org_admin_user.account:
-        access_token = create_access_token({"sub": org_admin_user.account.email})
-        refresh_token = create_tracked_refresh_token(
-            org_admin_user.account.id, org_admin_user.account.email, session
-        )
-        session.commit()
-
-    client.cookies.set("access_token", access_token)
-    client.cookies.set("refresh_token", refresh_token)
+        set_session_cookie(client, session, org_admin_user.account)
 
     yield client
 
@@ -363,20 +349,8 @@ def auth_client_member(
     """Provides a TestClient authenticated as the organization member"""
     client = TestClient(app, follow_redirects=False)
 
-    # Initialize tokens
-    access_token = ""
-    refresh_token = ""
-
-    # Create and set valid tokens
     if org_member_user.account:
-        access_token = create_access_token({"sub": org_member_user.account.email})
-        refresh_token = create_tracked_refresh_token(
-            org_member_user.account.id, org_member_user.account.email, session
-        )
-        session.commit()
-
-    client.cookies.set("access_token", access_token)
-    client.cookies.set("refresh_token", refresh_token)
+        set_session_cookie(client, session, org_member_user.account)
 
     yield client
 
@@ -388,20 +362,8 @@ def auth_client_non_member(
     """Provides a TestClient authenticated as a non-member"""
     client = TestClient(app, follow_redirects=False)
 
-    # Initialize tokens
-    access_token = ""
-    refresh_token = ""
-
-    # Create and set valid tokens
     if non_member_user.account:
-        access_token = create_access_token({"sub": non_member_user.account.email})
-        refresh_token = create_tracked_refresh_token(
-            non_member_user.account.id, non_member_user.account.email, session
-        )
-        session.commit()
-
-    client.cookies.set("access_token", access_token)
-    client.cookies.set("refresh_token", refresh_token)
+        set_session_cookie(client, session, non_member_user.account)
 
     yield client
 
@@ -560,22 +522,8 @@ def auth_client_invitee(
     """Provides a TestClient authenticated as the existing_invitee_user."""
     client = TestClient(app, follow_redirects=False)
 
-    # Initialize tokens
-    access_token = ""
-    refresh_token = ""
-
-    # Create and set valid tokens
     if existing_invitee_user.account:
-        access_token = create_access_token({"sub": existing_invitee_user.account.email})
-        refresh_token = create_tracked_refresh_token(
-            existing_invitee_user.account.id,
-            existing_invitee_user.account.email,
-            session,
-        )
-        session.commit()
-
-    client.cookies.set("access_token", access_token)
-    client.cookies.set("refresh_token", refresh_token)
+        set_session_cookie(client, session, existing_invitee_user.account)
 
     yield client
 

@@ -62,7 +62,7 @@ class Account(SQLModel, table=True):
         back_populates="account",
         sa_relationship_kwargs={"cascade": "all, delete-orphan"},
     )
-    refresh_tokens: Mapped[List["RefreshToken"]] = Relationship(
+    tokens: Mapped[List["AccountToken"]] = Relationship(
         back_populates="account",
         sa_relationship_kwargs={"cascade": "all, delete-orphan"},
     )
@@ -153,20 +153,29 @@ class AccountRecoveryToken(SQLModel, table=True):
         return _expires_at_passed(self.expires_at)
 
 
-class RefreshToken(SQLModel, table=True):
-    __table_args__ = {"schema": "private"}
+class AccountToken(SQLModel, table=True):
+    """One token row per credential the server has issued for an account.
+
+    Modeled on phx.gen.auth's users_tokens table: the kind of token is the
+    ``context`` column ("session" today; email-delivered token kinds can
+    migrate here later), validity is a per-context time window computed
+    from ``inserted_at`` at query time, and ``sent_to`` ties
+    email-delivered tokens to the address they were sent to.
+    """
+
+    __table_args__ = (
+        UniqueConstraint("context", "token", name="uq_account_token_context_token"),
+        {"schema": "private"},
+    )
 
     id: Optional[int] = Field(default=None, primary_key=True)
     account_id: Optional[int] = Field(foreign_key="private.account.id", index=True)
-    jti: str = Field(default_factory=lambda: str(uuid4()), index=True, unique=True)
-    expires_at: datetime
-    revoked: bool = Field(default=False)
-    created_at: datetime = Field(default_factory=utc_now)
+    token: str = Field(index=True)
+    context: str
+    sent_to: Optional[str] = Field(default=None)
+    inserted_at: datetime = Field(default_factory=utc_now)
 
-    account: Mapped[Optional[Account]] = Relationship(back_populates="refresh_tokens")
-
-    def is_expired(self) -> bool:
-        return _expires_at_passed(self.expires_at)
+    account: Mapped[Optional[Account]] = Relationship(back_populates="tokens")
 
 
 class RateLimitAttempt(SQLModel, table=True):

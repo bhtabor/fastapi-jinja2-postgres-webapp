@@ -84,10 +84,6 @@ class TestPostRedirectChainsRender:
         )
         assert_redirect_renders_full_page(unauth_client, response)
 
-    def test_refresh_token_redirect_renders(self, auth_client_owner):
-        response = auth_client_owner.post(_url("refresh_token"))
-        assert_redirect_renders_full_page(auth_client_owner, response)
-
     def test_create_organization_redirect_renders(self, auth_client):
         response = auth_client.post(
             _url("create_organization"),

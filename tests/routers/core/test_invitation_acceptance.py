@@ -72,8 +72,7 @@ def test_accept_invitation_new_user_post_registers_and_accepts(
     assert response.headers["location"] == expected_redirect_url
 
     # Check cookies are set
-    assert "access_token" in response.cookies
-    assert "refresh_token" in response.cookies
+    assert "session" in response.cookies
 
     # Verify database state
     # 1. Account created
@@ -152,8 +151,7 @@ def test_accept_invitation_existing_user_post_logs_in_and_accepts(
     assert response.headers["location"] == expected_redirect_url
 
     # Check cookies are set
-    assert "access_token" in response.cookies
-    assert "refresh_token" in response.cookies
+    assert "session" in response.cookies
 
     # Verify database state
     # 1. User added to the correct Role (load roles eagerly)

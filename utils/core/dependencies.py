@@ -6,11 +6,9 @@ from sqlalchemy.orm import selectinload
 from datetime import UTC, datetime
 from typing import Optional, Tuple, Generator
 from utils.core.auth import (
-    validate_token,
-    create_access_token,
-    create_tracked_refresh_token,
-    revoke_all_refresh_tokens,
-    oauth2_scheme_cookie,
+    REMEMBER_ME_COOKIE_NAME,
+    SESSION_TOKEN_KEY,
+    get_account_by_session_token,
     verify_password,
 )
 from utils.core.db import create_engine, get_connection_url
@@ -20,17 +18,14 @@ from utils.core.models import (
     AccountRecoveryToken,
     PasswordResetToken,
     EmailVerificationToken,
-    RefreshToken,
     Account,
 )
 from exceptions.http_exceptions import (
     AlreadyAuthenticatedError,
     AuthenticationError,
     CredentialsError,
-    DataIntegrityError,
     PasswordValidationError,
 )
-from exceptions.exceptions import NeedsNewTokens
 from utils.core.invitations import get_invitation_token_warning
 
 logger = logging.getLogger(__name__)
@@ -48,65 +43,28 @@ def get_session() -> Generator[Session, None, None]:
         yield session
 
 
-def validate_token_and_get_account(
-    token: str, token_type: str, session: Session
-) -> tuple[Optional[Account], Optional[str], Optional[str]]:
+def get_account_from_session(request: Request, session: Session) -> Optional[Account]:
+    """Resolve the authenticated account from the cookie session.
+
+    The signed session cookie carries an opaque token; its authority is the
+    AccountToken row (context "session"). When the browser-lifetime session
+    cookie is gone but a remember-me cookie is present, the session is
+    repopulated from it (phx.gen.auth's ensure_user_token behavior).
     """
-    Validates a token and returns the associated account if valid.
-    For refresh tokens, performs server-side JTI validation with reuse detection.
-
-    Args:
-        token: JWT token to validate
-        token_type: Type of token ('access' or 'refresh')
-        session: Database session
-
-    Returns:
-        Tuple containing the account (if valid), and new tokens (if refresh token)
-    """
-    decoded_token = validate_token(token, token_type=token_type)
-
-    if decoded_token:
-        user_email = decoded_token.get("sub")
-        account = session.exec(
-            select(Account).where(Account.email == user_email)
-        ).first()
-
+    token = request.session.get(SESSION_TOKEN_KEY)
+    if token:
+        account = get_account_by_session_token(token, session)
         if account:
-            assert account.id is not None
-            if token_type == "refresh":
-                jti = decoded_token.get("jti")
-                if not jti:
-                    # Legacy token without JTI — force re-login
-                    return None, None, None
+            return account
 
-                db_token = session.exec(
-                    select(RefreshToken).where(RefreshToken.jti == jti)
-                ).first()
+    remember_token = request.cookies.get(REMEMBER_ME_COOKIE_NAME)
+    if remember_token and remember_token != token:
+        account = get_account_by_session_token(remember_token, session)
+        if account:
+            request.session[SESSION_TOKEN_KEY] = remember_token
+            return account
 
-                if not db_token or db_token.account_id != account.id:
-                    return None, None, None
-
-                if db_token.revoked:
-                    # Token reuse detected — revoke all tokens for this account
-                    logger.warning(
-                        f"Refresh token reuse detected for account {account.id}. "
-                        "Revoking all refresh tokens."
-                    )
-                    revoke_all_refresh_tokens(account.id, session)
-                    session.commit()
-                    return None, None, None
-
-                # Revoke the current token and issue new ones
-                db_token.revoked = True
-                persistent = bool(decoded_token.get("persistent", False))
-                new_access_token = create_access_token(data={"sub": account.email})
-                new_refresh_token = create_tracked_refresh_token(
-                    account.id, account.email, session, persistent=persistent
-                )
-                session.commit()
-                return account, new_access_token, new_refresh_token
-            return account, None, None
-    return None, None, None
+    return None
 
 
 def get_account_from_credentials(
@@ -136,141 +94,39 @@ def get_account_from_credentials(
     return account, session
 
 
-def get_account_from_tokens(
-    tokens: tuple[Optional[str], Optional[str]], session: Session
-) -> tuple[Optional[Account], Optional[str], Optional[str]]:
-    """
-    Attempts to get an account from access or refresh tokens.
-
-    Args:
-        tokens: Tuple of (access_token, refresh_token)
-        session: Database session
-
-    Returns:
-        Tuple containing the account (if valid), and new tokens (if using refresh token)
-    """
-    access_token, refresh_token = tokens
-
-    # Try to validate the access token first
-    account, _, _ = (
-        validate_token_and_get_account(access_token, "access", session)
-        if access_token
-        else (None, None, None)
-    )
-    if account:
-        return account, None, None
-
-    # If access token is invalid or missing, try the refresh token
-    if refresh_token:
-        account, new_access_token, new_refresh_token = validate_token_and_get_account(
-            refresh_token, "refresh", session
-        )
-        if account:
-            return account, new_access_token, new_refresh_token
-
-    # Return a tuple of None values if no valid account is found
-    return None, None, None
-
-
 def get_authenticated_account(
-    tokens: tuple[Optional[str], Optional[str]] = Depends(oauth2_scheme_cookie),
+    request: Request,
     session: Session = Depends(get_session),
 ) -> Account:
     """
     Dependency that returns the authenticated account or raises an exception.
 
-    Args:
-        tokens: Tuple of (access_token, refresh_token)
-        session: Database session
-
-    Returns:
-        The authenticated account
-
     Raises:
-        AuthenticationError: If no valid account is found
-        NeedsNewTokens: If using refresh token and new tokens are generated
+        AuthenticationError: If no valid session is found
     """
-    account, new_access_token, new_refresh_token = get_account_from_tokens(
-        tokens, session
-    )
-
+    account = get_account_from_session(request, session)
     if account:
-        if new_access_token and new_refresh_token:
-            # This will be caught by middleware to set new cookies
-            if account.user:
-                raise NeedsNewTokens(account.user, new_access_token, new_refresh_token)
-            else:
-                raise DataIntegrityError("User")
         return account
-
     raise AuthenticationError()
-
-
-def validate_token_and_get_user(
-    token: str, token_type: str, session: Session
-) -> tuple[Optional[User], Optional[str], Optional[str]]:
-    # Delegate to validate_token_and_get_account for shared JTI logic
-    account, new_access_token, new_refresh_token = validate_token_and_get_account(
-        token, token_type, session
-    )
-    if account and account.user:
-        return account.user, new_access_token, new_refresh_token
-    return None, None, None
-
-
-def get_user_from_tokens(
-    tokens: tuple[Optional[str], Optional[str]], session: Session
-) -> tuple[Optional[User], Optional[str], Optional[str]]:
-    access_token, refresh_token = tokens
-
-    # Try to validate the access token first
-    user, _, _ = (
-        validate_token_and_get_user(access_token, "access", session)
-        if access_token
-        else (None, None, None)
-    )
-    if user:
-        return user, None, None
-
-    # If access token is invalid or missing, try the refresh token
-    if refresh_token:
-        user, new_access_token, new_refresh_token = validate_token_and_get_user(
-            refresh_token, "refresh", session
-        )
-        if user:
-            return user, new_access_token, new_refresh_token
-
-    # Return a tuple of None values if no valid user is found
-    return None, None, None
 
 
 def get_authenticated_user(
-    tokens: tuple[Optional[str], Optional[str]] = Depends(oauth2_scheme_cookie),
+    request: Request,
     session: Session = Depends(get_session),
 ) -> User:
-    user, new_access_token, new_refresh_token = get_user_from_tokens(tokens, session)
-
-    if user:
-        if new_access_token and new_refresh_token:
-            raise NeedsNewTokens(user, new_access_token, new_refresh_token)
-        return user
-
+    account = get_account_from_session(request, session)
+    if account and account.user:
+        return account.user
     raise AuthenticationError()
 
 
-# TODO: Maybe instead of an optional function, we have get_account and then
-# get_required_account, which just wraps it?
 def get_optional_user(
-    tokens: tuple[Optional[str], Optional[str]] = Depends(oauth2_scheme_cookie),
+    request: Request,
     session: Session = Depends(get_session),
 ) -> Optional[User]:
-    user, new_access_token, new_refresh_token = get_user_from_tokens(tokens, session)
-
-    if user:
-        if new_access_token and new_refresh_token:
-            raise NeedsNewTokens(user, new_access_token, new_refresh_token)
-        return user
-
+    account = get_account_from_session(request, session)
+    if account and account.user:
+        return account.user
     return None
 
 
@@ -426,27 +282,13 @@ def get_user_with_relations(
 
 async def get_user_from_request(request: Request) -> Optional[User]:
     """
-    Helper function to get user from request cookies in exception handlers.
-    Exception handlers can't use Depends(), so we manually extract tokens and get the user.
+    Helper function to get the user in exception handlers.
+    Exception handlers can't use Depends(), so we resolve the session manually.
     """
-    access_token = request.cookies.get("access_token")
-    refresh_token = request.cookies.get("refresh_token")
-    tokens = (access_token, refresh_token)
-
-    # Get a database session
     engine = create_engine(get_connection_url())
     with Session(engine) as session:
-        user, new_access_token, new_refresh_token = get_user_from_tokens(
-            tokens, session
-        )
-
-        # If we got new tokens, we'd normally raise NeedsNewTokens, but in an exception
-        # handler we can't do that easily. For now, just return the user.
-        # The tokens will be refreshed on the next request.
-        if user and new_access_token and new_refresh_token:
-            # Note: We can't easily set cookies here since we're in an exception handler.
-            # The user will need to make another request to get new tokens.
-            pass
+        account = get_account_from_session(request, session)
+        user = account.user if account else None
 
         if user:
             # Eagerly load avatar so it's available after the session closes

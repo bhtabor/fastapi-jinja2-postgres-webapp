@@ -20,7 +20,6 @@ from utils.core.dependencies import (
     get_user_from_request,
     require_unauthenticated_client,
 )
-from utils.core.auth import refresh_token_is_persistent, set_auth_cookies
 from utils.core.rate_limit import get_trusted_proxy_hosts
 from utils.core.csrf import (
     CSRF_COOKIE_NAME,
@@ -45,8 +44,38 @@ from exceptions.http_exceptions import (
     CredentialsError,
     RateLimitError,
 )
-from exceptions.exceptions import NeedsNewTokens
 from utils.core.db import set_up_db
+
+from starlette.middleware.sessions import SessionMiddleware
+from utils.core.auth import COOKIE_SECURE
+
+
+class EnvSessionMiddleware:
+    """SessionMiddleware that reads SECRET_KEY on first request.
+
+    The signed-cookie session (Starlette SessionMiddleware) needs the app
+    secret, but .env (and the test suite's env fixtures) load after this
+    module is imported — so the real middleware is built lazily.
+    """
+
+    def __init__(self, app):
+        self.app = app
+        self._middleware = None
+
+    async def __call__(self, scope, receive, send):
+        if self._middleware is None:
+            import os
+
+            self._middleware = SessionMiddleware(
+                self.app,
+                secret_key=os.environ["SECRET_KEY"],
+                session_cookie="session",
+                max_age=None,  # browser-session cookie; remember-me is separate
+                same_site="lax",
+                https_only=COOKIE_SECURE,
+            )
+        await self._middleware(scope, receive, send)
+
 
 logger = logging.getLogger("uvicorn.error")
 logger.setLevel(logging.DEBUG)
@@ -104,6 +133,12 @@ async def csrf_middleware(request: Request, call_next):
     if request.cookies.get(CSRF_COOKIE_NAME) != token:
         set_csrf_cookie(response, token)
     return response
+
+
+# Session middleware is added last so it is OUTERMOST: the flash and CSRF
+# middlewares above (and their error handlers) read request.session, which
+# only exists after SessionMiddleware has run.
+app.add_middleware(EnvSessionMiddleware)
 
 
 # --- Include Routers ---
@@ -212,23 +247,6 @@ async def credentials_exception_handler(request: Request, exc: CredentialsError)
         },
         status_code=exc.status_code,
     )
-
-
-# Handle NeedsNewTokens by setting new tokens and redirecting to same page
-@app.exception_handler(NeedsNewTokens)
-async def needs_new_tokens_handler(request: Request, exc: NeedsNewTokens):
-    # Preserve query string so GET routes with query params work after token refresh
-    redirect_url = str(request.url)
-    response = RedirectResponse(
-        url=redirect_url, status_code=status.HTTP_307_TEMPORARY_REDIRECT
-    )
-    set_auth_cookies(
-        response,
-        exc.access_token,
-        exc.refresh_token,
-        persistent=refresh_token_is_persistent(exc.refresh_token),
-    )
-    return response
 
 
 # Handle PasswordValidationError by rendering the validation_error page
