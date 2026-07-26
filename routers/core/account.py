@@ -613,10 +613,10 @@ async def reset_password(
         )
 
     assert authorized_account.id is not None
-    # Update password and mark token as used
+    # Update password and consume the single-use token
     authorized_account.hashed_password = get_password_hash(new_password)
 
-    reset_token.used = True
+    session.delete(reset_token)
     session.commit()
     session.refresh(authorized_account)
 
@@ -674,8 +674,10 @@ async def recover_account(
         raise CredentialsError(message="Invalid or expired recovery token")
 
     assert account.id is not None
-    # Mark recovery token as used
-    recovery_token.used = True
+    assert recovery_token.sent_to is not None
+    recovered_email = recovery_token.sent_to
+    # Consume the single-use token
+    session.delete(recovery_token)
 
     # Delete ALL existing AccountEmail rows (purge attacker's emails)
     # Flush deletes before inserting the restored email to avoid unique constraint
@@ -692,7 +694,7 @@ async def recover_account(
 
     restored_email = AccountEmail(
         account_id=account.id,
-        email=recovery_token.email,
+        email=recovered_email,
         is_primary=True,
         verified=True,
         verified_at=dt.now(utc_tz),
@@ -700,24 +702,24 @@ async def recover_account(
     session.add(restored_email)
 
     # Update Account.email
-    account.email = recovery_token.email
+    account.email = recovered_email
 
     # Log out every device
     revoke_all_session_tokens(account.id, session)
 
-    # Create a password reset token
-    from utils.core.models import PasswordResetToken
+    # Create a password reset token (raw value goes into the redirect URL)
+    from utils.core.auth import RESET_PASSWORD_CONTEXT, build_email_token
 
-    reset_token = PasswordResetToken(account_id=account.id)
-    session.add(reset_token)
+    raw_reset_token = build_email_token(
+        account.id, RESET_PASSWORD_CONTEXT, recovered_email, session
+    )
 
     session.commit()
-    session.refresh(reset_token)
 
     # Redirect to password reset page
     from utils.core.auth import generate_password_reset_url
 
-    reset_url = generate_password_reset_url(recovery_token.email, reset_token.token)
+    reset_url = generate_password_reset_url(recovered_email, raw_reset_token)
     response = RedirectResponse(url=reset_url, status_code=303)
     set_flash_cookie(response, "Account recovered. Please set a new password.")
     return response
@@ -801,8 +803,10 @@ async def verify_email(
     assert account.id is not None
 
     # Race condition guard: check email not already taken
+    assert verification_token.sent_to is not None
+    verified_email = verification_token.sent_to
     existing = session.exec(
-        select(AccountEmail).where(AccountEmail.email == verification_token.new_email)
+        select(AccountEmail).where(AccountEmail.email == verified_email)
     ).first()
     if existing:
         raise EmailAlreadyRegisteredError()
@@ -812,19 +816,19 @@ async def verify_email(
 
     account_email = AccountEmail(
         account_id=account.id,
-        email=verification_token.new_email,
+        email=verified_email,
         is_primary=False,
         verified=True,
         verified_at=dt.now(utc_tz),
     )
     session.add(account_email)
 
-    # Mark token as used
-    verification_token.used = True
+    # Consume the single-use token
+    session.delete(verification_token)
     session.commit()
 
     # Send notification to primary email
-    send_email_verified_notification(account.email, verification_token.new_email)
+    send_email_verified_notification(account.email, verified_email)
 
     login_path: URLPath = router.url_path_for("read_login")
     response = RedirectResponse(url=str(login_path), status_code=303)

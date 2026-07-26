@@ -3,30 +3,29 @@
 from __future__ import annotations
 
 import pytest
-from datetime import UTC, datetime, timedelta
 
-from utils.core.models import AccountRecoveryToken, PasswordResetToken
+from utils.core.auth import (
+    RECOVERY_CONTEXT,
+    RESET_PASSWORD_CONTEXT,
+    build_email_token,
+)
 
 
 @pytest.fixture
 def password_reset_credentials(session, test_account):
     """Valid email/token pair for GET /account/reset_password."""
-    reset_token = PasswordResetToken(account_id=test_account.id)
-    session.add(reset_token)
+    raw_token = build_email_token(
+        test_account.id, RESET_PASSWORD_CONTEXT, test_account.email, session
+    )
     session.commit()
-    session.refresh(reset_token)
-    return test_account.email, reset_token.token
+    return test_account.email, raw_token
 
 
 @pytest.fixture
 def account_recovery_token(session, test_account):
     """Valid recovery token for GET /account/recover."""
-    token = AccountRecoveryToken(
-        account_id=test_account.id,
-        email=test_account.email,
-        expires_at=datetime.now(UTC).replace(tzinfo=None) + timedelta(days=7),
+    raw_token = build_email_token(
+        test_account.id, RECOVERY_CONTEXT, test_account.email, session
     )
-    session.add(token)
     session.commit()
-    session.refresh(token)
-    return token.token
+    return raw_token

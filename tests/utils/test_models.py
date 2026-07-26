@@ -7,11 +7,9 @@ import pytest
 from utils.core.models import (
     Account,
     AccountEmail,
-    AccountRecoveryToken,
-    EmailVerificationToken,
     Organization,
     Permission,
-    PasswordResetToken,
+    AccountToken,
     Role,
     RolePermissionLink,
     User,
@@ -28,10 +26,9 @@ from tests.conftest import SetupError
 
 
 def test_private_models_have_private_schema():
-    """Account, PasswordResetToken, and EmailVerificationToken must live in the 'private' schema."""
+    """Account and AccountToken must live in the 'private' schema."""
     assert Account.__table__.schema == "private"
-    assert PasswordResetToken.__table__.schema == "private"
-    assert EmailVerificationToken.__table__.schema == "private"
+    assert AccountToken.__table__.schema == "private"
 
 
 def test_public_models_not_in_private_schema():
@@ -198,50 +195,59 @@ def test_cascade_delete_organization(
     assert remaining_user.id == test_user.id
 
 
-def test_password_reset_token_cascade_delete(session: Session, test_account: Account):
+def test_account_token_cascade_delete(session: Session, test_account: Account):
     """
-    Test that password reset tokens are deleted when an account is deleted
+    Test that account tokens are deleted when an account is deleted
     """
-    # Create reset tokens for the account
-    token1 = PasswordResetToken(account_id=test_account.id)
-    token2 = PasswordResetToken(account_id=test_account.id)
-    session.add(token1)
-    session.add(token2)
+    session.add(AccountToken(account_id=test_account.id, token="t1", context="session"))
+    session.add(
+        AccountToken(account_id=test_account.id, token="t2", context="reset_password")
+    )
     session.commit()
 
-    # Verify tokens exist
-    tokens = session.exec(select(PasswordResetToken)).all()
+    tokens = session.exec(select(AccountToken)).all()
     assert len(tokens) == 2
 
-    # Delete the account
     session.delete(test_account)
     session.commit()
 
-    # Verify tokens were cascade deleted
-    remaining_tokens = session.exec(select(PasswordResetToken)).all()
+    remaining_tokens = session.exec(select(AccountToken)).all()
     assert len(remaining_tokens) == 0
 
 
-def test_password_reset_token_is_expired(session: Session, test_account: Account):
-    """
-    Test that password reset token expiration is properly set and checked
-    """
-    # Create an expired token
-    expired_token = PasswordResetToken(
-        account_id=test_account.id, expires_at=utc_naive_now() - timedelta(hours=1)
+def test_account_token_fields_persist(session: Session, test_account: Account):
+    """AccountToken persists context, sent_to, and inserted_at."""
+    token = AccountToken(
+        account_id=test_account.id,
+        token="hashed-value",
+        context="confirm_email",
+        sent_to="new@example.com",
     )
-    session.add(expired_token)
+    session.add(token)
+    session.commit()
+    session.refresh(token)
 
-    # Create a valid token
-    valid_token = PasswordResetToken(
-        account_id=test_account.id, expires_at=utc_naive_now() + timedelta(hours=1)
+    assert token.id is not None
+    assert token.account_id == test_account.id
+    assert token.context == "confirm_email"
+    assert token.sent_to == "new@example.com"
+    assert token.inserted_at is not None
+
+
+def test_account_token_context_token_unique(session: Session, test_account: Account):
+    """(context, token) is unique; the same token may exist in another context."""
+    from sqlalchemy.exc import IntegrityError
+
+    session.add(AccountToken(account_id=test_account.id, token="dup", context="session"))
+    session.add(
+        AccountToken(account_id=test_account.id, token="dup", context="recovery")
     )
-    session.add(valid_token)
     session.commit()
 
-    # Verify expiration states
-    assert expired_token.is_expired()
-    assert not valid_token.is_expired()
+    session.add(AccountToken(account_id=test_account.id, token="dup", context="session"))
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
 
 
 def test_user_has_permission(
@@ -524,84 +530,3 @@ def test_user_avatar_database_cascade_delete(session: Session, test_user: User):
 
 
 # --- EmailVerificationToken model tests ---
-
-
-def test_email_verification_token_creation(session: Session, test_account: Account):
-    """Test creating an EmailVerificationToken and verifying fields persist."""
-    token = EmailVerificationToken(
-        account_id=test_account.id,
-        new_email="newemail@example.com",
-    )
-    session.add(token)
-    session.commit()
-    session.refresh(token)
-
-    assert token.id is not None
-    assert token.account_id == test_account.id
-    assert token.new_email == "newemail@example.com"
-    assert token.token is not None  # auto-generated uuid
-    assert token.expires_at is not None
-    assert token.used is False
-
-
-def test_email_verification_token_is_expired(session: Session, test_account: Account):
-    """Test that is_expired() correctly identifies expired tokens."""
-    expired_token = EmailVerificationToken(
-        account_id=test_account.id,
-        new_email="expired@example.com",
-        expires_at=utc_naive_now() - timedelta(hours=1),
-    )
-    valid_token = EmailVerificationToken(
-        account_id=test_account.id,
-        new_email="valid@example.com",
-        expires_at=utc_naive_now() + timedelta(hours=1),
-    )
-    session.add(expired_token)
-    session.add(valid_token)
-    session.commit()
-
-    assert expired_token.is_expired()
-    assert not valid_token.is_expired()
-
-
-# --- AccountRecoveryToken tests ---
-
-
-def test_account_recovery_token_creation(session: Session, test_account: Account):
-    """Test that AccountRecoveryToken can be created with correct fields."""
-    token = AccountRecoveryToken(
-        account_id=test_account.id,
-        email="victim@example.com",
-    )
-    session.add(token)
-    session.commit()
-    session.refresh(token)
-
-    assert token.id is not None
-    assert token.account_id == test_account.id
-    assert token.email == "victim@example.com"
-    assert token.used is False
-    assert token.token is not None
-    # 7-day expiry
-    assert token.expires_at.replace(tzinfo=UTC) > datetime.now(UTC) + timedelta(days=6)
-    assert token.expires_at.replace(tzinfo=UTC) < datetime.now(UTC) + timedelta(days=8)
-
-
-def test_account_recovery_token_is_expired(session: Session, test_account: Account):
-    """Test is_expired() method on AccountRecoveryToken."""
-    expired_token = AccountRecoveryToken(
-        account_id=test_account.id,
-        email="expired@example.com",
-        expires_at=datetime.now(UTC) - timedelta(hours=1),
-    )
-    valid_token = AccountRecoveryToken(
-        account_id=test_account.id,
-        email="valid@example.com",
-        expires_at=datetime.now(UTC) + timedelta(days=7),
-    )
-    session.add(expired_token)
-    session.add(valid_token)
-    session.commit()
-
-    assert expired_token.is_expired()
-    assert not valid_token.is_expired()

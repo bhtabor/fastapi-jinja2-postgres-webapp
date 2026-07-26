@@ -1,8 +1,8 @@
 # utils.core.py
 import os
 import re
+import hashlib
 import secrets
-import uuid
 import logging
 import resend
 from sqlmodel import Session, select, delete
@@ -15,10 +15,7 @@ from fastapi import Request
 from starlette.responses import Response
 from utils.core.db import create_engine, get_connection_url
 from utils.core.models import (
-    AccountRecoveryToken,
     AccountToken,
-    EmailVerificationToken,
-    PasswordResetToken,
     Account,
 )
 
@@ -33,13 +30,25 @@ logger.addHandler(logging.StreamHandler())
 templates = Jinja2Templates(directory="templates")
 COOKIE_SECURE = os.getenv("BASE_URL", "http://localhost:8000").startswith("https")
 
-# Session authentication (modeled on phx.gen.auth): the signed session
-# cookie carries an opaque token whose authority is an AccountToken row.
+# Session authentication: the signed session cookie carries an opaque
+# token whose authority is an AccountToken row.
 SESSION_TOKEN_KEY = "account_token"
 SESSION_TOKEN_CONTEXT = "session"
 SESSION_VALIDITY_DAYS = 14
 REMEMBER_ME_COOKIE_NAME = "remember_me"
 REMEMBER_ME_MAX_AGE = SESSION_VALIDITY_DAYS * 24 * 60 * 60
+
+# Email-delivered token contexts and their validity windows. These tokens
+# are stored sha256-hashed (the raw value only ever appears in the emailed
+# link), single-use, and tied to the address they were sent to.
+RESET_PASSWORD_CONTEXT = "reset_password"
+CONFIRM_EMAIL_CONTEXT = "confirm_email"
+RECOVERY_CONTEXT = "recovery"
+EMAIL_TOKEN_VALIDITY = {
+    RESET_PASSWORD_CONTEXT: timedelta(hours=1),
+    CONFIRM_EMAIL_CONTEXT: timedelta(hours=1),
+    RECOVERY_CONTEXT: timedelta(days=7),
+}
 PASSWORD_PATTERN_COMPONENTS = [
     r"(?=.*\d)",  # At least one digit
     r"(?=.*[a-z])",  # At least one lowercase letter
@@ -206,6 +215,60 @@ def log_out_session(request: Request, response: Response, session: Session) -> N
     response.delete_cookie(REMEMBER_ME_COOKIE_NAME)
 
 
+def hash_token(raw_token: str) -> str:
+    """sha256 an email-delivered token for storage/lookup."""
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def build_email_token(
+    account_id: int, context: str, sent_to: str, session: Session
+) -> str:
+    """Create a hashed, single-use email token row; returns the raw token.
+
+    The raw value goes into the emailed link; only its hash is stored, so a
+    database leak cannot forge the link. Does NOT commit.
+    """
+    raw_token = secrets.token_urlsafe(32)
+    session.add(
+        AccountToken(
+            account_id=account_id,
+            token=hash_token(raw_token),
+            context=context,
+            sent_to=sent_to,
+        )
+    )
+    return raw_token
+
+
+def get_email_token_row(
+    raw_token: str, context: str, session: Session
+) -> Optional[AccountToken]:
+    """Return the unexpired token row a raw emailed token corresponds to."""
+    cutoff = datetime.now(UTC) - EMAIL_TOKEN_VALIDITY[context]
+    return session.exec(
+        select(AccountToken).where(
+            AccountToken.token == hash_token(raw_token),
+            AccountToken.context == context,
+            AccountToken.inserted_at > cutoff,
+        )
+    ).first()
+
+
+def has_unexpired_email_token(
+    account_id: int, context: str, session: Session, sent_to: Optional[str] = None
+) -> bool:
+    """True when an unexpired token of this kind already exists (send suppression)."""
+    cutoff = datetime.now(UTC) - EMAIL_TOKEN_VALIDITY[context]
+    statement = select(AccountToken).where(
+        AccountToken.account_id == account_id,
+        AccountToken.context == context,
+        AccountToken.inserted_at > cutoff,
+    )
+    if sent_to is not None:
+        statement = statement.where(AccountToken.sent_to == sent_to)
+    return session.exec(statement).first() is not None
+
+
 def cleanup_expired_session_tokens(session: Session) -> int:
     """Delete expired session token rows; returns the number removed."""
     cutoff = datetime.now(UTC) - timedelta(days=SESSION_VALIDITY_DAYS)
@@ -244,24 +307,15 @@ def send_reset_email(email: str, session: Session) -> None:
     ).first()
 
     if account:
-        existing_token = session.exec(
-            select(PasswordResetToken).where(
-                PasswordResetToken.account_id == account.id,
-                PasswordResetToken.expires_at > datetime.now(UTC),
-                PasswordResetToken.used == False,  # noqa: E712 - SQL expression for boolean false
-            )
-        ).first()
-
-        if existing_token:
+        assert account.id is not None
+        if has_unexpired_email_token(account.id, RESET_PASSWORD_CONTEXT, session):
             logger.debug("An unexpired token already exists for this account.")
             return
 
-        # Generate a new token
-        token: str = str(uuid.uuid4())
-        reset_token: PasswordResetToken = PasswordResetToken(
-            account_id=account.id, token=token
+        # Generate a new token (hashed at rest; raw goes into the email)
+        token: str = build_email_token(
+            account.id, RESET_PASSWORD_CONTEXT, email, session
         )
-        session.add(reset_token)
 
         try:
             reset_url: str = generate_password_reset_url(email, token)
@@ -319,28 +373,19 @@ def send_email_verification(account_id: int, new_email: str, session: Session) -
     Returns True if email was sent, False if suppressed (existing unexpired token).
     """
     # Check for existing unexpired token for this account+email
-    existing_token = session.exec(
-        select(EmailVerificationToken).where(
-            EmailVerificationToken.account_id == account_id,
-            EmailVerificationToken.new_email == new_email,
-            EmailVerificationToken.expires_at > datetime.now(UTC),
-            EmailVerificationToken.used == False,  # noqa: E712
-        )
-    ).first()
-
-    if existing_token:
+    if has_unexpired_email_token(
+        account_id, CONFIRM_EMAIL_CONTEXT, session, sent_to=new_email
+    ):
         logger.debug("An unexpired verification token already exists for this email.")
         return False
 
-    # Create new token
-    token = EmailVerificationToken(
-        account_id=account_id,
-        new_email=new_email,
+    # Create new token (hashed at rest; raw goes into the email)
+    raw_token = build_email_token(
+        account_id, CONFIRM_EMAIL_CONTEXT, new_email, session
     )
-    session.add(token)
 
     try:
-        verification_url = generate_email_verification_url(token.token)
+        verification_url = generate_email_verification_url(raw_token)
 
         template: Template = templates.get_template("emails/verify_new_email.html")
         html_content: str = template.render({"verification_url": verification_url})
@@ -449,24 +494,8 @@ def generate_recovery_url(token: str) -> str:
 def create_recovery_token(account_id: int, email: str, session: Session) -> str:
     """
     Create an account recovery token for the given email.
-    Returns the token string. Does NOT commit — caller is responsible.
-    If an unexpired token already exists for the same account+email, returns it.
+    Returns the raw token string (only its hash is stored). Does NOT
+    commit — caller is responsible. Each call issues a fresh token; all
+    unexpired tokens remain valid until used.
     """
-    existing = session.exec(
-        select(AccountRecoveryToken).where(
-            AccountRecoveryToken.account_id == account_id,
-            AccountRecoveryToken.email == email,
-            AccountRecoveryToken.expires_at > datetime.now(UTC),
-            AccountRecoveryToken.used == False,  # noqa: E712
-        )
-    ).first()
-
-    if existing:
-        return existing.token
-
-    token = AccountRecoveryToken(
-        account_id=account_id,
-        email=email,
-    )
-    session.add(token)
-    return token.token
+    return build_email_token(account_id, RECOVERY_CONTEXT, email, session)

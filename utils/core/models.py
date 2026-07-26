@@ -50,15 +50,7 @@ class Account(SQLModel, table=True):
         back_populates="account",
         sa_relationship_kwargs={"cascade": "all, delete-orphan"},
     )
-    password_reset_tokens: Mapped[List["PasswordResetToken"]] = Relationship(
-        back_populates="account",
-        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
-    )
     emails: Mapped[List["AccountEmail"]] = Relationship(
-        back_populates="account",
-        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
-    )
-    email_verification_tokens: Mapped[List["EmailVerificationToken"]] = Relationship(
         back_populates="account",
         sa_relationship_kwargs={"cascade": "all, delete-orphan"},
     )
@@ -66,32 +58,6 @@ class Account(SQLModel, table=True):
         back_populates="account",
         sa_relationship_kwargs={"cascade": "all, delete-orphan"},
     )
-    account_recovery_tokens: Mapped[List["AccountRecoveryToken"]] = Relationship(
-        back_populates="account",
-        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
-    )
-
-
-class PasswordResetToken(SQLModel, table=True):
-    __table_args__ = {"schema": "private"}
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    account_id: Optional[int] = Field(foreign_key="private.account.id")
-    token: str = Field(default_factory=lambda: str(uuid4()), index=True, unique=True)
-    expires_at: datetime = Field(
-        default_factory=lambda: datetime.now(UTC) + timedelta(hours=1)
-    )
-    used: bool = Field(default=False)
-
-    account: Mapped[Optional[Account]] = Relationship(
-        back_populates="password_reset_tokens"
-    )
-
-    def is_expired(self) -> bool:
-        """
-        Check if the token has expired
-        """
-        return _expires_at_passed(self.expires_at)
 
 
 class AccountEmail(SQLModel, table=True):
@@ -113,54 +79,18 @@ class AccountEmail(SQLModel, table=True):
     account: Mapped[Optional["Account"]] = Relationship(back_populates="emails")
 
 
-class EmailVerificationToken(SQLModel, table=True):
-    __table_args__ = {"schema": "private"}
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    account_id: Optional[int] = Field(foreign_key="private.account.id")
-    token: str = Field(default_factory=lambda: str(uuid4()), index=True, unique=True)
-    new_email: str
-    expires_at: datetime = Field(
-        default_factory=lambda: datetime.now(UTC) + timedelta(hours=1)
-    )
-    used: bool = Field(default=False)
-
-    account: Mapped[Optional["Account"]] = Relationship(
-        back_populates="email_verification_tokens"
-    )
-
-    def is_expired(self) -> bool:
-        return _expires_at_passed(self.expires_at)
-
-
-class AccountRecoveryToken(SQLModel, table=True):
-    __table_args__ = {"schema": "private"}
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    account_id: Optional[int] = Field(foreign_key="private.account.id")
-    token: str = Field(default_factory=lambda: str(uuid4()), index=True, unique=True)
-    email: str  # the email address to restore
-    expires_at: datetime = Field(
-        default_factory=lambda: datetime.now(UTC) + timedelta(days=7)
-    )
-    used: bool = Field(default=False)
-
-    account: Mapped[Optional[Account]] = Relationship(
-        back_populates="account_recovery_tokens"
-    )
-
-    def is_expired(self) -> bool:
-        return _expires_at_passed(self.expires_at)
-
-
 class AccountToken(SQLModel, table=True):
     """One token row per credential the server has issued for an account.
 
-    Modeled on phx.gen.auth's users_tokens table: the kind of token is the
-    ``context`` column ("session" today; email-delivered token kinds can
-    migrate here later), validity is a per-context time window computed
-    from ``inserted_at`` at query time, and ``sent_to`` ties
-    email-delivered tokens to the address they were sent to.
+    The kind of token is the ``context`` column ("session",
+    "reset_password", "confirm_email", "recovery"), validity is a
+    per-context time window computed from ``inserted_at`` at query time,
+    and ``sent_to`` ties email-delivered tokens to the address they were
+    sent to.
+
+    Session tokens are stored raw; email-delivered tokens are stored
+    sha256-hashed so a database leak cannot forge emailed links. Tokens
+    are single-use: flows delete the row on consumption.
     """
 
     __table_args__ = (

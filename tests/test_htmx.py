@@ -209,14 +209,15 @@ def test_forgot_password_form_has_hx_post(unauth_client):
 
 def test_reset_password_form_has_hx_post(unauth_client, session, test_account):
     """Reset password form must include hx-post so submissions go through HTMX."""
-    from utils.core.models import PasswordResetToken
+    from utils.core.auth import RESET_PASSWORD_CONTEXT, build_email_token
 
-    token = PasswordResetToken(account_id=test_account.id)
-    session.add(token)
+    token = build_email_token(
+        test_account.id, RESET_PASSWORD_CONTEXT, test_account.email, session
+    )
     session.commit()
     response = unauth_client.get(
         "/account/reset_password",
-        params={"email": test_account.email, "token": token.token},
+        params={"email": test_account.email, "token": token},
     )
     assert response.status_code == 200
     assert "hx-post" in response.text
@@ -274,16 +275,17 @@ def test_reset_password_htmx_success_returns_hx_redirect(
     unauth_client, session, test_account
 ):
     """HTMX reset-password success must return HX-Redirect, not a 303."""
-    from utils.core.models import PasswordResetToken
+    from utils.core.auth import RESET_PASSWORD_CONTEXT, build_email_token
 
-    token = PasswordResetToken(account_id=test_account.id)
-    session.add(token)
+    token = build_email_token(
+        test_account.id, RESET_PASSWORD_CONTEXT, test_account.email, session
+    )
     session.commit()
     response = unauth_client.post(
         "/account/reset_password",
         data={
             "email": test_account.email,
-            "token": token.token,
+            "token": token,
             "password": "NewPass123!@#",
             "confirm_password": "NewPass123!@#",
         },

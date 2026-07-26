@@ -2,9 +2,8 @@ from unittest.mock import MagicMock, patch
 from datetime import datetime, timedelta, UTC
 from utils.core.models import (
     Account,
-    AccountRecoveryToken,
+    AccountToken,
     User,
-    PasswordResetToken,
     Role,
 )
 from utils.core.dependencies import (
@@ -155,30 +154,39 @@ def test_get_account_from_reset_token() -> None:
     Tests retrieving an account from a password reset token.
     """
     session = MagicMock()
-
-    # Test valid token
     mock_account = Account(id=1, email="test@example.com")
-    mock_token = PasswordResetToken(
-        account_id=1,
-        token="valid_token",
-        expires_at=datetime.now(UTC) + timedelta(hours=1),
-        used=False,
+    mock_token = AccountToken(
+        account_id=1, token="hashed", context="reset_password", sent_to="test@example.com"
     )
-    session.exec.return_value.first.return_value = (mock_account, mock_token)
 
-    account, token = get_account_from_reset_token(
-        "test@example.com", "valid_token", session
-    )
-    assert account == mock_account
-    assert token == mock_token
+    # Valid token belonging to the account with the given email
+    with patch("utils.core.dependencies.get_email_token_row") as mock_row:
+        mock_row.return_value = mock_token
+        session.get.return_value = mock_account
+        account, token = get_account_from_reset_token(
+            "test@example.com", "raw_token", session
+        )
+        assert account == mock_account
+        assert token == mock_token
 
-    # Test invalid token
-    session.exec.return_value.first.return_value = None
-    account, token = get_account_from_reset_token(
-        "test@example.com", "invalid_token", session
-    )
-    assert account is None
-    assert token is None
+    # Valid token but email mismatch
+    with patch("utils.core.dependencies.get_email_token_row") as mock_row:
+        mock_row.return_value = mock_token
+        session.get.return_value = Account(id=1, email="other@example.com")
+        account, token = get_account_from_reset_token(
+            "test@example.com", "raw_token", session
+        )
+        assert account is None
+        assert token is None
+
+    # Invalid/expired/consumed token
+    with patch("utils.core.dependencies.get_email_token_row") as mock_row:
+        mock_row.return_value = None
+        account, token = get_account_from_reset_token(
+            "test@example.com", "invalid_token", session
+        )
+        assert account is None
+        assert token is None
 
 
 def test_get_user_with_relations() -> None:
@@ -280,52 +288,33 @@ def test_get_verified_account() -> None:
         assert exc_info.value.detail["field"] == "password"
 
 
-# --- AccountRecoveryToken dependency tests ---
+# --- Recovery token dependency tests ---
 
 
 def test_get_account_from_recovery_token_valid() -> None:
-    """Test valid recovery token returns (account, token)."""
+    """Test valid recovery token returns (account, token row)."""
     session = MagicMock()
     mock_account = Account(id=1, email="test@example.com")
-    mock_token = AccountRecoveryToken(
-        account_id=1,
-        token="valid_token",
-        email="victim@example.com",
-        expires_at=datetime.now(UTC) + timedelta(days=7),
-        used=False,
+    mock_token = AccountToken(
+        account_id=1, token="hashed", context="recovery", sent_to="victim@example.com"
     )
-    session.exec.return_value.first.return_value = (mock_account, mock_token)
-
-    account, token = get_account_from_recovery_token("valid_token", session)
-    assert account == mock_account
-    assert token == mock_token
-
-
-def test_get_account_from_recovery_token_expired() -> None:
-    """Test expired recovery token returns (None, None)."""
-    session = MagicMock()
-    session.exec.return_value.first.return_value = None
-
-    account, token = get_account_from_recovery_token("expired_token", session)
-    assert account is None
-    assert token is None
-
-
-def test_get_account_from_recovery_token_used() -> None:
-    """Test used recovery token returns (None, None)."""
-    session = MagicMock()
-    session.exec.return_value.first.return_value = None
-
-    account, token = get_account_from_recovery_token("used_token", session)
-    assert account is None
-    assert token is None
+    with patch("utils.core.dependencies.get_email_token_row") as mock_row:
+        mock_row.return_value = mock_token
+        session.get.return_value = mock_account
+        account, token = get_account_from_recovery_token("raw_token", session)
+        assert account == mock_account
+        assert token == mock_token
 
 
 def test_get_account_from_recovery_token_invalid() -> None:
-    """Test nonexistent recovery token returns (None, None)."""
-    session = MagicMock()
-    session.exec.return_value.first.return_value = None
+    """Expired, consumed, or nonexistent recovery tokens return (None, None).
 
-    account, token = get_account_from_recovery_token("nonexistent", session)
-    assert account is None
-    assert token is None
+    All three cases collapse to the same lookup miss: expiry is a query-time
+    window and consumption deletes the row.
+    """
+    session = MagicMock()
+    with patch("utils.core.dependencies.get_email_token_row") as mock_row:
+        mock_row.return_value = None
+        account, token = get_account_from_recovery_token("nonexistent", session)
+        assert account is None
+        assert token is None

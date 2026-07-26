@@ -295,15 +295,13 @@ def test_set_up_db_creates_tables(engine: Engine, session: Session):
 
     # Check that private tables are NOT in the public schema
     assert "account" not in public_table_names
-    assert "passwordresettoken" not in public_table_names
-    assert "emailverificationtoken" not in public_table_names
+    assert "accounttoken" not in public_table_names
 
     # Check that private tables ARE in the private schema
     private_table_names = inspector.get_table_names(schema="private")
     expected_private_tables = {
         "account",
-        "passwordresettoken",
-        "emailverificationtoken",
+        "accounttoken",
     }
     assert expected_private_tables.issubset(set(private_table_names))
 
@@ -320,12 +318,10 @@ def test_private_schema_exists_after_setup(engine: Engine):
 
 
 def test_private_tables_in_private_schema(engine: Engine):
-    """Account, PasswordResetToken, and EmailVerificationToken must be in the private schema."""
+    """Account and AccountToken must be in the private schema."""
     inspector = inspect(engine)
     private_tables = set(inspector.get_table_names(schema="private"))
-    assert {"account", "passwordresettoken", "emailverificationtoken"}.issubset(
-        private_tables
-    )
+    assert {"account", "accounttoken"}.issubset(private_tables)
 
 
 def test_public_tables_in_public_schema(engine: Engine):
@@ -335,8 +331,7 @@ def test_public_tables_in_public_schema(engine: Engine):
     assert {"user", "organization", "role", "permission"}.issubset(public_tables)
     # Private tables must not leak into public
     assert "account" not in public_tables
-    assert "passwordresettoken" not in public_tables
-    assert "emailverificationtoken" not in public_tables
+    assert "accounttoken" not in public_tables
 
 
 def test_set_up_db_drop_flag(engine: Engine, session: Session):
