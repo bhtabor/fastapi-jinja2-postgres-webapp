@@ -1185,11 +1185,7 @@ def test_resend_invitation_htmx_returns_members_partial(
 
 
 def test_csrf_enabled_htmx_login_returns_toast(unauth_client, monkeypatch):
-    from utils.core.csrf import CSRF_COOKIE_NAME, generate_csrf_token
-
     monkeypatch.setenv("CSRF_ENABLED", "1")
-    token = generate_csrf_token()
-    unauth_client.cookies.set(CSRF_COOKIE_NAME, token)
 
     response = unauth_client.post(
         "/account/login",
