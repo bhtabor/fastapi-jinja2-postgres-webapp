@@ -25,6 +25,7 @@ from utils.core.csrf import (
     CSRF_SESSION_KEY,
     enforce_csrf,
     generate_csrf_token,
+    mask_csrf_token,
 )
 from utils.core.htmx import (
     is_htmx_request,
@@ -119,15 +120,17 @@ async def flash_cookie_middleware(request: Request, call_next):
 
 # The CSRF token lives in the signed cookie session, so it is never
 # readable (or settable) by scripts or cross-site requests. Logging in
-# clears the session, which also rotates the token. This middleware only
-# issues the token; validation happens in the enforce_csrf app dependency.
+# clears the session, which also rotates the token. Templates get a
+# per-request masked encoding, never the raw token, so response bodies
+# don't repeat a static secret. This middleware only issues the token;
+# validation happens in the enforce_csrf app dependency.
 @app.middleware("http")
 async def csrf_middleware(request: Request, call_next):
     token = request.session.get(CSRF_SESSION_KEY)
     if not isinstance(token, str) or not token:
         token = generate_csrf_token()
         request.session[CSRF_SESSION_KEY] = token
-    request.state.csrf_token = token
+    request.state.csrf_token = mask_csrf_token(token)
 
     return await call_next(request)
 
