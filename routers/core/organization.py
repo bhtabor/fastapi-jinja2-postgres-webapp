@@ -24,7 +24,8 @@ from exceptions.http_exceptions import (
     DataIntegrityError,
 )
 from pydantic import EmailStr
-from utils.core.htmx import is_htmx_request, set_flash_cookie
+from utils.core.flash import set_flash
+from utils.core.htmx import is_htmx_request
 
 logger = getLogger("uvicorn.error")
 
@@ -215,12 +216,12 @@ def update_organization(
         response.headers["HX-Redirect"] = str(
             router.url_path_for("read_organization", org_id=org_id)
         )
-        set_flash_cookie(response, "Organization updated successfully.")
+        set_flash(request, "Organization updated successfully.")
         return response
     response = RedirectResponse(
         url=router.url_path_for("read_organization", org_id=org_id), status_code=303
     )
-    set_flash_cookie(response, "Organization updated successfully.")
+    set_flash(request, "Organization updated successfully.")
     return response
 
 
@@ -255,10 +256,10 @@ def delete_organization(
     if is_htmx_request(request):
         response = Response(status_code=200)
         response.headers["HX-Redirect"] = "/user/profile"
-        set_flash_cookie(response, "Organization deleted successfully.")
+        set_flash(request, "Organization deleted successfully.")
         return response
     response = RedirectResponse(url="/user/profile", status_code=303)
-    set_flash_cookie(response, "Organization deleted successfully.")
+    set_flash(request, "Organization deleted successfully.")
     return response
 
 

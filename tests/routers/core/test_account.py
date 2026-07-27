@@ -602,8 +602,10 @@ def test_password_reset_auto_logs_in_and_shows_flash(
     cookie_headers = response.headers.get_list("set-cookie")
     assert any(header.startswith("session=") for header in cookie_headers)
 
-    # Should set a flash cookie with success message
-    assert any("flash_message=" in c for c in cookie_headers)
+    # Should carry a success flash in the session
+    from tests.conftest import get_session_data
+
+    assert get_session_data(unauth_client).get("flash")
 
 
 def test_password_reset_revokes_existing_sessions(
@@ -716,8 +718,10 @@ def test_password_reset_after_recovery_auto_logs_in(
     cookie_headers = reset_response.headers.get_list("set-cookie")
     assert any(header.startswith("session=") for header in cookie_headers)
 
-    # Should have flash message
-    assert any("flash_message=" in c for c in cookie_headers)
+    # Should carry a flash message in the session
+    from tests.conftest import get_session_data
+
+    assert get_session_data(unauth_client).get("flash")
 
 
 def test_password_reset_email_url(
@@ -1148,7 +1152,10 @@ def test_verify_email_creates_account_email(
     )
     assert response.status_code == 303
     assert "/account/login" in response.headers["location"]
-    assert "flash_message" in response.cookies
+    from tests.conftest import get_session_data
+
+    flash = get_session_data(unauth_client).get("flash")
+    assert flash and "verified" in flash["message"]
 
     # Verify AccountEmail was created
     account_email = session.exec(
@@ -1284,8 +1291,11 @@ def test_verify_email_unauthenticated_redirects_to_login(
     assert response.status_code == 303
     assert "/account/login" in response.headers["location"]
 
-    # Flash cookie should be set
-    assert "flash_message" in response.cookies
+    # A flash message should be pending in the session
+    from tests.conftest import get_session_data
+
+    flash = get_session_data(unauth_client).get("flash")
+    assert flash and "verified" in flash["message"]
 
     # Email should still be verified
     account_email = session.exec(

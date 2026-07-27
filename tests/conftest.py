@@ -153,6 +153,21 @@ def _signed_session_cookie(data: dict) -> str:
     return signer.sign(payload).decode("utf-8")
 
 
+def get_session_data(client: TestClient) -> dict:
+    """Decode a TestClient's signed session cookie into its dict."""
+    import base64
+    import json
+
+    import itsdangerous
+
+    raw = client.cookies.get("session")
+    if not raw:
+        return {}
+    signer = itsdangerous.TimestampSigner(str(os.environ["SECRET_KEY"]))
+    payload = signer.unsign(raw.encode("utf-8"))
+    return json.loads(base64.b64decode(payload))
+
+
 def set_session_cookie(client: TestClient, session: Session, account) -> None:
     """Authenticate a TestClient: session token row + signed session cookie."""
     assert account.id is not None

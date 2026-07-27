@@ -1,12 +1,7 @@
-import json
-from urllib.parse import quote, unquote
 from starlette.requests import Request
 from starlette.responses import Response
 from fastapi.templating import Jinja2Templates
 from starlette.templating import _TemplateResponse as TemplateResponse
-from utils.core.auth import COOKIE_SECURE
-
-
 def is_htmx_request(request: Request) -> bool:
     return request.headers.get("HX-Request") == "true"
 
@@ -65,37 +60,3 @@ def append_toast(
     # Update content-length header
     response.headers["content-length"] = str(len(response.body))
     return response
-
-
-# --- Flash cookie helpers for non-HTMX PRG redirects ---
-
-FLASH_COOKIE_NAME = "flash_message"
-
-
-def set_flash_cookie(response: Response, message: str, level: str = "success") -> None:
-    """Set a flash message cookie that will be consumed on the next page load.
-
-    The JSON value is URL-encoded before being set as a cookie to avoid
-    Python's http.cookies module mangling characters like commas (\\054)
-    and quotes, which breaks client-side JSON.parse().
-    """
-    value = quote(json.dumps({"message": message, "level": level}), safe="")
-    response.set_cookie(
-        key=FLASH_COOKIE_NAME,
-        value=value,
-        httponly=False,  # JS needs to read it
-        secure=COOKIE_SECURE,
-        samesite="lax",
-        max_age=60,  # expire after 60 seconds
-    )
-
-
-def get_flash_cookie(request: Request) -> dict | None:
-    """Read and return the flash message from the cookie, or None."""
-    raw = request.cookies.get(FLASH_COOKIE_NAME)
-    if not raw:
-        return None
-    try:
-        return json.loads(unquote(raw))
-    except (json.JSONDecodeError, TypeError):
-        return None

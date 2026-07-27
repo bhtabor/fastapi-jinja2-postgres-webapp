@@ -1072,50 +1072,46 @@ def test_no_templates_use_hx_on_after_request():
 
 
 # ---------------------------------------------------------------------------
-# --- Flash cookie encoding tests ---
+# --- Flash session tests ---
 
 
-def test_flash_cookie_value_is_valid_json_decodable_by_js():
-    """Flash cookie round-trip: server → browser → JS:
+def test_flash_set_and_pop_roundtrip():
+    """set_flash stores a one-shot message in the session; pop_flash consumes it."""
+    from unittest.mock import MagicMock
 
-    1. Server calls set_flash_cookie(), which JSON-encodes the message
-       and URL-encodes the result before setting the cookie.
-    2. Browser stores the cookie and sends it back on subsequent requests.
-    3. Client JS reads document.cookie, applies decodeURIComponent(),
-       and calls JSON.parse() to extract the message and level.
+    from utils.core.flash import FLASH_SESSION_KEY, pop_flash, set_flash
 
-    This test verifies the cookie value survives Python's http.cookies
-    encoding (which mangles commas as \\054) by simulating the JS
-    decode path on the raw Set-Cookie header value.
-    """
-    from starlette.responses import Response
-    from utils.core.htmx import set_flash_cookie
-    import json
-    from urllib.parse import unquote
+    request = MagicMock()
+    request.session = {}
 
-    response = Response()
-    set_flash_cookie(response, "Email address verified and added to your account.")
+    set_flash(request, "Email address verified and added to your account.")
+    assert FLASH_SESSION_KEY in request.session
 
-    # Extract the raw Set-Cookie header value
-    for header_name, header_value in response.raw_headers:
-        if header_name == b"set-cookie" and b"flash_message=" in header_value:
-            header_str = header_value.decode()
-            # Extract cookie value: everything between "flash_message=" and the first ";"
-            cookie_part = header_str.split("flash_message=")[1].split(";")[0]
-            # Strip surrounding quotes if present (http.cookies quoting)
-            if cookie_part.startswith('"') and cookie_part.endswith('"'):
-                cookie_part = cookie_part[1:-1]
-            # Simulate what JS decodeURIComponent does
-            decoded = unquote(cookie_part)
-            # Must be parseable as JSON
-            parsed = json.loads(decoded)
-            assert (
-                parsed["message"] == "Email address verified and added to your account."
-            )
-            assert parsed["level"] == "success"
-            return
+    flash = pop_flash(request)
+    assert flash == {
+        "message": "Email address verified and added to your account.",
+        "level": "success",
+    }
+    assert FLASH_SESSION_KEY not in request.session
+    assert pop_flash(request) is None
 
-    raise AssertionError("flash_message cookie not found in response headers")
+
+def test_flash_appears_once_on_next_page(unauth_client, test_account, session):
+    """A redirect's flash renders as a toast on the next page load only."""
+    from main import app
+
+    response = unauth_client.post(
+        app.url_path_for("forgot_password"),
+        data={"email": "missing@example.com"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    follow = unauth_client.get(response.headers["location"])
+    assert "If an account exists" in follow.text
+
+    again = unauth_client.get(response.headers["location"])
+    assert "If an account exists" not in again.text
 
 
 # ---------------------------------------------------------------------------

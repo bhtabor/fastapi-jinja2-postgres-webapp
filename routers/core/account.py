@@ -73,7 +73,8 @@ from utils.core.rate_limit import (
     check_forgot_password_email_rate_limit,
     login_email_limiter,
 )
-from utils.core.htmx import is_htmx_request, toast_response, set_flash_cookie
+from utils.core.flash import set_flash
+from utils.core.htmx import is_htmx_request, toast_response
 from utils.core.communication_preferences import (
     parse_communication_preferences,
     apply_communication_preferences,
@@ -581,8 +582,8 @@ async def forgot_password(
         response = RedirectResponse(
             url=f"{redirect_path}?show_form=false", status_code=303
         )
-    set_flash_cookie(
-        response,
+    set_flash(
+        request,
         "If an account exists with this email, a password reset link will be sent.",
     )
     return response
@@ -635,7 +636,7 @@ async def reset_password(
 
     log_in_session(request, response, authorized_account.id, session)
     session.commit()
-    set_flash_cookie(response, message)
+    set_flash(request, message)
     return response
 
 
@@ -660,6 +661,7 @@ async def recover_account_confirm(
 
 @router.post("/recover")
 async def recover_account(
+    request: Request,
     token: str = Form(...),
     session: Session = Depends(get_session),
 ):
@@ -721,7 +723,7 @@ async def recover_account(
 
     reset_url = generate_password_reset_url(recovered_email, raw_reset_token)
     response = RedirectResponse(url=reset_url, status_code=303)
-    set_flash_cookie(response, "Account recovered. Please set a new password.")
+    set_flash(request, "Account recovered. Please set a new password.")
     return response
 
 
@@ -777,12 +779,13 @@ async def add_email(
         )
     profile_path: URLPath = user_router.url_path_for("read_profile")
     response = RedirectResponse(url=str(profile_path), status_code=303)
-    set_flash_cookie(response, message)
+    set_flash(request, message)
     return response
 
 
 @router.get("/emails/verify")
 async def verify_email(
+    request: Request,
     token: str,
     session: Session = Depends(get_session),
 ):
@@ -832,7 +835,7 @@ async def verify_email(
 
     login_path: URLPath = router.url_path_for("read_login")
     response = RedirectResponse(url=str(login_path), status_code=303)
-    set_flash_cookie(response, "Email address verified and added to your account.")
+    set_flash(request, "Email address verified and added to your account.")
     return response
 
 
@@ -908,9 +911,9 @@ async def promote_email(
         response.headers["HX-Redirect"] = str(profile_path)
     else:
         response = RedirectResponse(url=str(profile_path), status_code=303)
-    set_flash_cookie(response, "Primary email address updated.")
     log_in_session(request, response, account.id, session)
     session.commit()
+    set_flash(request, "Primary email address updated.")
     return response
 
 
@@ -958,5 +961,5 @@ async def remove_email(
         )
     profile_path: URLPath = user_router.url_path_for("read_profile")
     response = RedirectResponse(url=str(profile_path), status_code=303)
-    set_flash_cookie(response, "Email address removed.")
+    set_flash(request, "Email address removed.")
     return response
