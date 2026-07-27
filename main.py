@@ -39,9 +39,8 @@ from utils.core.dependencies import (
     get_user_from_request,
     require_unauthenticated_client,
 )
+from utils.core.flash import pop_flash
 from utils.core.htmx import (
-    FLASH_COOKIE_NAME,
-    get_flash_cookie,
     is_htmx_request,
     toast_response,
 )
@@ -104,19 +103,15 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 
-# --- Flash cookie middleware ---
-# Reads the flash cookie into request.state so templates can render it
-# server-side, then clears the cookie on the response.
+# --- Flash middleware ---
+# Pops the pending flash message out of the session into request.state so
+# templates can render it server-side; popping consumes it.
 
 
 @app.middleware("http")
-async def flash_cookie_middleware(request: Request, call_next):
-    flash = get_flash_cookie(request)
-    request.state.flash = flash
-    response = await call_next(request)
-    if flash:
-        response.delete_cookie(FLASH_COOKIE_NAME, path="/")
-    return response
+async def flash_middleware(request: Request, call_next):
+    request.state.flash = pop_flash(request)
+    return await call_next(request)
 
 
 # The CSRF token lives in the signed cookie session, so it is never

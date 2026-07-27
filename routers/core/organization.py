@@ -25,7 +25,8 @@ from utils.core.dependencies import (
     get_user_with_relations,
 )
 from utils.core.enums import ValidPermissions
-from utils.core.htmx import is_htmx_request, set_flash_cookie
+from utils.core.flash import set_flash
+from utils.core.htmx import is_htmx_request
 from utils.core.models import Account, Invitation, Organization, Role, User, utc_now
 
 logger = getLogger("uvicorn.error")
@@ -38,7 +39,7 @@ templates = Jinja2Templates(directory="templates")
 
 
 @router.get("/{org_id}")
-def read_organization(
+async def read_organization(
     org_id: int,
     request: Request,
     user: User = Depends(get_user_with_relations),
@@ -217,12 +218,12 @@ def update_organization(
         response.headers["HX-Redirect"] = str(
             router.url_path_for("read_organization", org_id=org_id)
         )
-        set_flash_cookie(response, "Organization updated successfully.")
+        set_flash(request, "Organization updated successfully.")
         return response
     response = RedirectResponse(
         url=router.url_path_for("read_organization", org_id=org_id), status_code=303
     )
-    set_flash_cookie(response, "Organization updated successfully.")
+    set_flash(request, "Organization updated successfully.")
     return response
 
 
@@ -257,10 +258,10 @@ def delete_organization(
     if is_htmx_request(request):
         response = Response(status_code=200)
         response.headers["HX-Redirect"] = "/user/profile"
-        set_flash_cookie(response, "Organization deleted successfully.")
+        set_flash(request, "Organization deleted successfully.")
         return response
     response = RedirectResponse(url="/user/profile", status_code=303)
-    set_flash_cookie(response, "Organization deleted successfully.")
+    set_flash(request, "Organization deleted successfully.")
     return response
 
 

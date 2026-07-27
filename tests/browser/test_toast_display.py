@@ -149,11 +149,11 @@ def test_htmx_error_toast_appears(anon_page: Page):
     expect(toast).to_be_visible(timeout=5_000)
 
 
-# --- 3. Flash cookie toast (redirect + cookie) ---
+# --- 3. Flash toast (redirect + session flash) ---
 
 
-def test_flash_cookie_toast_appears(anon_page: Page, live_server: str):
-    """Forgot-password flow sets a flash cookie; toast appears after redirect."""
+def test_flash_toast_appears(anon_page: Page, live_server: str):
+    """Forgot-password flow sets a session flash; toast appears after redirect."""
     page = anon_page
 
     page.goto(f"{live_server}/account/forgot_password")
@@ -162,8 +162,8 @@ def test_flash_cookie_toast_appears(anon_page: Page, live_server: str):
     page.fill("#email", "toast-tests@example.com")
     page.click('button[type="submit"]')
 
-    # The server sets HX-Redirect + flash cookie.  After the redirect the
-    # toast should be visible on the new page.
+    # The server sets HX-Redirect + a session flash.  After the redirect
+    # the toast should be visible on the new page.
     toast = page.locator("#toast-container .toast")
     expect(toast).to_be_visible(timeout=10_000)
     expect(toast).to_contain_text("If an account exists")

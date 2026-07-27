@@ -55,7 +55,8 @@ from utils.core.dependencies import (
     require_unauthenticated_client,
     require_unauthenticated_unless_invitation_warning,
 )
-from utils.core.htmx import is_htmx_request, set_flash_cookie, toast_response
+from utils.core.flash import set_flash
+from utils.core.htmx import is_htmx_request, toast_response
 from utils.core.invitations import (
     get_invitation_token_warning,
     process_invitation,
@@ -576,8 +577,8 @@ def forgot_password(
         response = RedirectResponse(
             url=f"{redirect_path}?show_form=false", status_code=303
         )
-    set_flash_cookie(
-        response,
+    set_flash(
+        request,
         "If an account exists with this email, a password reset link will be sent.",
     )
     return response
@@ -630,7 +631,7 @@ def reset_password(
 
     log_in_session(request, response, authorized_account.id, session)
     session.commit()
-    set_flash_cookie(response, message)
+    set_flash(request, message)
     return response
 
 
@@ -655,6 +656,7 @@ def recover_account_confirm(
 
 @router.post("/recover")
 def recover_account(
+    request: Request,
     token: str = Form(...),
     session: Session = Depends(get_session),
 ):
@@ -717,7 +719,7 @@ def recover_account(
 
     reset_url = generate_password_reset_url(recovered_email, raw_reset_token)
     response = RedirectResponse(url=reset_url, status_code=303)
-    set_flash_cookie(response, "Account recovered. Please set a new password.")
+    set_flash(request, "Account recovered. Please set a new password.")
     return response
 
 
@@ -773,12 +775,13 @@ def add_email(
         )
     profile_path: URLPath = user_router.url_path_for("read_profile")
     response = RedirectResponse(url=str(profile_path), status_code=303)
-    set_flash_cookie(response, message)
+    set_flash(request, message)
     return response
 
 
 @router.get("/emails/verify")
 def verify_email(
+    request: Request,
     token: str,
     session: Session = Depends(get_session),
 ):
@@ -829,7 +832,7 @@ def verify_email(
 
     login_path: URLPath = router.url_path_for("read_login")
     response = RedirectResponse(url=str(login_path), status_code=303)
-    set_flash_cookie(response, "Email address verified and added to your account.")
+    set_flash(request, "Email address verified and added to your account.")
     return response
 
 
@@ -905,9 +908,9 @@ def promote_email(
         response.headers["HX-Redirect"] = str(profile_path)
     else:
         response = RedirectResponse(url=str(profile_path), status_code=303)
-    set_flash_cookie(response, "Primary email address updated.")
     log_in_session(request, response, account.id, session)
     session.commit()
+    set_flash(request, "Primary email address updated.")
     return response
 
 
@@ -955,5 +958,5 @@ def remove_email(
         )
     profile_path: URLPath = user_router.url_path_for("read_profile")
     response = RedirectResponse(url=str(profile_path), status_code=303)
-    set_flash_cookie(response, "Email address removed.")
+    set_flash(request, "Email address removed.")
     return response
