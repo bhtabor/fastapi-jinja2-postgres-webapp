@@ -1,9 +1,9 @@
 // ui.js — lightweight interactive components (dropdowns, modals, collapse,
 // toast dismissal) that replace Bootstrap's JavaScript bundle.
 //
-// Loaded with defer in <head> (outside <body>) so it is never re-processed
-// during htmx hx-boost body swaps. All behavior is wired through
-// document-level event delegation, so it keeps working for markup that htmx
+// Loaded with defer in <head> (outside <body>) so it is never re-executed
+// during Turbo Drive body swaps. All behavior is wired through
+// document-level event delegation, so it keeps working for markup that Turbo
 // injects or swaps in after the initial page load.
 //
 // The components read the same data-bs-* attributes the templates already use
@@ -103,8 +103,8 @@
         cleanupModalChrome();
     }
 
-    // Remove leftover chrome once no modals remain open. Safe to call after an
-    // OOB swap has already replaced the modal element itself.
+    // Remove leftover chrome once no modals remain open. Safe to call after a
+    // stream update has already replaced the modal element itself.
     function cleanupModalChrome() {
         if (document.querySelector(".modal.show")) {
             return;
@@ -130,6 +130,52 @@
             return null;
         }
     }
+
+    // ------------------------------------------------------------ Auto-dismiss
+
+    // Toasts marked data-auto-dismiss="5s" remove themselves after the given
+    // delay. The observer watches the whole document so it survives Turbo
+    // body swaps and catches toasts added by any means: flash-cookie renders,
+    // client scripts, or stream appends.
+
+    function scheduleAutoDismiss(el) {
+        if (el.dataset.autoDismissScheduled) {
+            return;
+        }
+        el.dataset.autoDismissScheduled = "true";
+        var match = /^(\d+(?:\.\d+)?)(ms|s)?$/.exec(
+            (el.getAttribute("data-auto-dismiss") || "").trim()
+        );
+        var delay = match
+            ? parseFloat(match[1]) * (match[2] === "ms" ? 1 : 1000)
+            : 5000;
+        setTimeout(function () {
+            el.remove();
+        }, delay);
+    }
+
+    function scanAutoDismiss(root) {
+        if (root.matches && root.matches("[data-auto-dismiss]")) {
+            scheduleAutoDismiss(root);
+        }
+        if (root.querySelectorAll) {
+            root.querySelectorAll("[data-auto-dismiss]").forEach(scheduleAutoDismiss);
+        }
+    }
+
+    new MutationObserver(function (mutations) {
+        mutations.forEach(function (mutation) {
+            mutation.addedNodes.forEach(function (node) {
+                if (node.nodeType === Node.ELEMENT_NODE) {
+                    scanAutoDismiss(node);
+                }
+            });
+        });
+    }).observe(document.documentElement, { childList: true, subtree: true });
+
+    document.addEventListener("DOMContentLoaded", function () {
+        scanAutoDismiss(document.body);
+    });
 
     // ------------------------------------------------------------- Delegation
 
@@ -204,7 +250,7 @@
     });
 
     // Expose a tiny API for scripts that need to dismiss modals programmatically
-    // (e.g. htmx responses that trigger a modalDismiss event after an OOB swap).
+    // (e.g. responses that trigger a modalDismiss event after a partial update).
     window.UI = {
         openModal: openModal,
         hideModal: hideModal,

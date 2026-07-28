@@ -1,130 +1,78 @@
 """
-Tests for HTMX-specific endpoint behavior.
+Tests for Turbo-specific endpoint behavior.
 
-Convention: HTMX requests send the HX-Request: true header.
-- Success responses return 200 HTML partials (no <!DOCTYPE html>).
-- Error responses return 422/400/401 toast partials.
-- Navigation responses return 200 with HX-Redirect header.
-- Non-HTMX paths remain unchanged (303 RedirectResponse or full-page error).
+Convention: Turbo Stream-accepting requests send an Accept header listing
+text/vnd.turbo-stream.html.
+- Success responses return 200 turbo-stream bodies (no <!DOCTYPE html>).
+- Error responses return 422/400/401 toast streams.
+- Navigation responses use plain 303 redirects — Turbo Drive follows them.
+- Requests outside a Turbo Stream/Frame context get the same full-page
+  behavior as a plain browser request.
 """
 
-from starlette.requests import Request
-from fastapi.templating import Jinja2Templates
-from tests.conftest import htmx_headers
-from utils.core.htmx import is_htmx_request, toast_response, append_toast
+from fastapi_turbo.testing import assert_turbo_stream, parse_streams
+from tests.conftest import turbo_frame_headers, turbo_stream_headers
 from utils.core.rate_limit import (
     forgot_password_ip_limiter,
     login_ip_limiter,
 )
 
 # ---------------------------------------------------------------------------
-# 1.3 — is_htmx_request helper
-# ---------------------------------------------------------------------------
-
-
-def test_is_htmx_request_true():
-    scope = {
-        "type": "http",
-        "headers": [(b"hx-request", b"true")],
-        "method": "GET",
-        "path": "/",
-        "query_string": b"",
-    }
-    request = Request(scope)
-    assert is_htmx_request(request) is True
-
-
-def test_is_htmx_request_false():
-    scope = {
-        "type": "http",
-        "headers": [],
-        "method": "GET",
-        "path": "/",
-        "query_string": b"",
-    }
-    request = Request(scope)
-    assert is_htmx_request(request) is False
-
-
-# ---------------------------------------------------------------------------
 # 1.4 — Exception handler branches
 # ---------------------------------------------------------------------------
 
 
-def _assert_htmx_error_is_oob_only(response):
-    """Assert an HTMX error response contains only OOB-swapped content.
+def _assert_error_toast_stream(response, target: str = "toast-container"):
+    """Assert an error response is a single append-toast turbo-stream.
 
-    If the response contained non-OOB HTML, HTMX would replace the main
-    swap target with that content, clobbering whatever widget triggered
-    the request (e.g. a roles table).
+    main.py's global exception handlers respond to Turbo Stream-accepting
+    clients with exactly one <turbo-stream action="append" target="..."> —
+    unlike a full-page error render, this never clobbers whatever element
+    triggered the request.
     """
-    from html.parser import HTMLParser
-
-    class TopLevelChecker(HTMLParser):
-        def __init__(self):
-            super().__init__()
-            self.depth = 0
-            self.top_level_tags = []
-            self.top_level_has_oob = []
-
-        def handle_starttag(self, tag, attrs):
-            if self.depth == 0:
-                attrs_dict = dict(attrs)
-                self.top_level_tags.append(tag)
-                self.top_level_has_oob.append("hx-swap-oob" in attrs_dict)
-            self.depth += 1
-
-        def handle_endtag(self, tag):
-            self.depth -= 1
-
-    checker = TopLevelChecker()
-    checker.feed(response.text.strip())
-    assert checker.top_level_tags, "HTMX error response body is empty"
-    for i, (tag, has_oob) in enumerate(
-        zip(checker.top_level_tags, checker.top_level_has_oob)
-    ):
-        assert has_oob, (
-            f"Top-level element #{i} (<{tag}>) lacks hx-swap-oob — "
-            "it would replace the HTMX swap target on error responses"
-        )
+    assert_turbo_stream(response)
+    actions = parse_streams(response)
+    assert len(actions) == 1, f"expected exactly one stream action, got {actions}"
+    assert actions[0].action == "append"
+    assert actions[0].target == target
 
 
-def test_validation_error_returns_toast_for_htmx(unauth_client):
-    """RequestValidationError from an HTMX request returns a 422 toast partial."""
+def test_validation_error_returns_toast_for_turbo(unauth_client):
+    """RequestValidationError from a Turbo Stream request returns a 422 toast."""
     response = unauth_client.post(
         "/account/login",
         data={"email": "", "password": ""},
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 422
     assert "<!DOCTYPE html>" not in response.text
     assert "toast" in response.text
-    _assert_htmx_error_is_oob_only(response)
+    _assert_error_toast_stream(response)
 
 
-def test_credentials_error_htmx_is_oob_only(unauth_client):
-    """CredentialsError HTMX response must be OOB-only to avoid clobbering targets."""
+def test_credentials_error_turbo_is_single_toast_stream(unauth_client):
+    """CredentialsError Turbo response must be a single toast stream."""
     response = unauth_client.post(
         "/account/login",
         data={"email": "nobody@example.com", "password": "wrongpass"},
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 401
-    _assert_htmx_error_is_oob_only(response)
+    _assert_error_toast_stream(response)
 
 
-def test_http_exception_htmx_is_oob_only(auth_client, test_organization):
-    """HTTPException HTMX response (e.g. duplicate org name) must be OOB-only."""
+def test_http_exception_turbo_is_single_toast_stream(auth_client, test_organization):
+    """HTTPException Turbo response (e.g. duplicate org name) must be a single toast stream."""
     response = auth_client.post(
         "/organizations/create",
         data={"name": test_organization.name},
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code in (400, 422)
-    _assert_htmx_error_is_oob_only(response)
+    _assert_error_toast_stream(response)
 
 
-def test_validation_error_returns_full_page_for_non_htmx(unauth_client):
+def test_validation_error_returns_full_page_for_non_turbo(unauth_client):
     response = unauth_client.post(
         "/account/login",
         data={"email": "", "password": ""},
@@ -134,11 +82,11 @@ def test_validation_error_returns_full_page_for_non_htmx(unauth_client):
 
 
 # ---------------------------------------------------------------------------
-# 1.5 — Non-HTMX error pages: human-readable, consistent navigation
+# 1.5 — Full-page error pages: human-readable, consistent navigation
 # ---------------------------------------------------------------------------
 
 
-def test_password_validation_error_non_htmx_shows_readable_message(unauth_client):
+def test_password_validation_error_full_page_shows_readable_message(unauth_client):
     """PasswordValidationError must render human-readable text, not raw dicts."""
     from html import unescape
 
@@ -160,8 +108,8 @@ def test_password_validation_error_non_htmx_shows_readable_message(unauth_client
     assert "{'message'" not in text, "Raw dict rendered in error page"
 
 
-def test_non_htmx_error_pages_have_go_back_and_home_links(unauth_client):
-    """All non-HTMX error pages should have both Go Back and Return to Home."""
+def test_full_page_error_pages_have_go_back_and_home_links(unauth_client):
+    """All full-page error pages should have both Go Back and Return to Home."""
     # Validation error (422)
     response = unauth_client.post(
         "/account/login",
@@ -182,33 +130,29 @@ def test_non_htmx_error_pages_have_go_back_and_home_links(unauth_client):
 
 
 # ---------------------------------------------------------------------------
-# 1.6 — Auth forms include hx-post for HTMX submission
+# 1.6 — Auth forms submit as plain forms (Turbo Drive needs no opt-in markup)
 # ---------------------------------------------------------------------------
 
 
-def test_login_form_has_hx_post(unauth_client):
-    """Login form must include hx-post so submissions go through HTMX."""
+def test_login_form_has_no_hx_post(unauth_client):
     response = unauth_client.get("/account/login")
     assert response.status_code == 200
-    assert "hx-post" in response.text
+    assert "hx-post" not in response.text
 
 
-def test_register_form_has_hx_post(unauth_client):
-    """Register form must include hx-post so submissions go through HTMX."""
+def test_register_form_has_no_hx_post(unauth_client):
     response = unauth_client.get("/account/register")
     assert response.status_code == 200
-    assert "hx-post" in response.text
+    assert "hx-post" not in response.text
 
 
-def test_forgot_password_form_has_hx_post(unauth_client):
-    """Forgot password form must include hx-post so submissions go through HTMX."""
+def test_forgot_password_form_has_no_hx_post(unauth_client):
     response = unauth_client.get("/account/forgot_password")
     assert response.status_code == 200
-    assert "hx-post" in response.text
+    assert "hx-post" not in response.text
 
 
-def test_reset_password_form_has_hx_post(unauth_client, session, test_account):
-    """Reset password form must include hx-post so submissions go through HTMX."""
+def test_reset_password_form_has_no_hx_post(unauth_client, session, test_account):
     from utils.core.auth import RESET_PASSWORD_CONTEXT, build_email_token
 
     token = build_email_token(
@@ -220,80 +164,7 @@ def test_reset_password_form_has_hx_post(unauth_client, session, test_account):
         params={"email": test_account.email, "token": token},
     )
     assert response.status_code == 200
-    assert "hx-post" in response.text
-
-
-# ---------------------------------------------------------------------------
-# 1.7 — Auth form HTMX success returns HX-Redirect (not 303)
-# ---------------------------------------------------------------------------
-
-
-def test_login_htmx_success_returns_hx_redirect(unauth_client, test_account):
-    """HTMX login success must return HX-Redirect header, not a 303."""
-    response = unauth_client.post(
-        "/account/login",
-        data={"email": test_account.email, "password": "Test123!@#"},
-        headers=htmx_headers(),
-        follow_redirects=False,
-    )
-    assert response.status_code == 200
-    assert "HX-Redirect" in response.headers
-
-
-def test_register_htmx_success_returns_hx_redirect(unauth_client):
-    """HTMX register success must return HX-Redirect header, not a 303."""
-    response = unauth_client.post(
-        "/account/register",
-        data={
-            "name": "HTMX User",
-            "email": "htmxuser@example.com",
-            "password": "Test123!@#",
-            "confirm_password": "Test123!@#",
-        },
-        headers=htmx_headers(),
-        follow_redirects=False,
-    )
-    assert response.status_code == 200
-    assert "HX-Redirect" in response.headers
-
-
-def test_forgot_password_htmx_success_returns_hx_redirect(
-    unauth_client, test_account, mock_resend_send
-):
-    """HTMX forgot-password success must return HX-Redirect, not a 303."""
-    response = unauth_client.post(
-        "/account/forgot_password",
-        data={"email": test_account.email},
-        headers=htmx_headers(),
-        follow_redirects=False,
-    )
-    assert response.status_code == 200
-    assert "HX-Redirect" in response.headers
-
-
-def test_reset_password_htmx_success_returns_hx_redirect(
-    unauth_client, session, test_account
-):
-    """HTMX reset-password success must return HX-Redirect, not a 303."""
-    from utils.core.auth import RESET_PASSWORD_CONTEXT, build_email_token
-
-    token = build_email_token(
-        test_account.id, RESET_PASSWORD_CONTEXT, test_account.email, session
-    )
-    session.commit()
-    response = unauth_client.post(
-        "/account/reset_password",
-        data={
-            "email": test_account.email,
-            "token": token,
-            "password": "NewPass123!@#",
-            "confirm_password": "NewPass123!@#",
-        },
-        headers=htmx_headers(),
-        follow_redirects=False,
-    )
-    assert response.status_code == 200
-    assert "HX-Redirect" in response.headers
+    assert "hx-post" not in response.text
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +172,7 @@ def test_reset_password_htmx_success_returns_hx_redirect(
 # ---------------------------------------------------------------------------
 
 
-def test_password_mismatch_htmx_returns_toast(unauth_client):
+def test_password_mismatch_turbo_returns_toast(unauth_client):
     response = unauth_client.post(
         "/account/register",
         data={
@@ -310,12 +181,12 @@ def test_password_mismatch_htmx_returns_toast(unauth_client):
             "password": "Abcdef1!",
             "confirm_password": "wrong",
         },
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 422
     assert "toast" in response.text
     assert "<!DOCTYPE html>" not in response.text
-    _assert_htmx_error_is_oob_only(response)
+    _assert_error_toast_stream(response)
 
 
 # ---------------------------------------------------------------------------
@@ -323,16 +194,16 @@ def test_password_mismatch_htmx_returns_toast(unauth_client):
 # ---------------------------------------------------------------------------
 
 
-def test_bad_login_htmx_returns_toast(unauth_client):
+def test_bad_login_turbo_returns_toast(unauth_client):
     response = unauth_client.post(
         "/account/login",
         data={"email": "nobody@example.com", "password": "wrongpass"},
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 401
     assert "toast" in response.text
     assert "<!DOCTYPE html>" not in response.text
-    _assert_htmx_error_is_oob_only(response)
+    _assert_error_toast_stream(response)
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +211,7 @@ def test_bad_login_htmx_returns_toast(unauth_client):
 # ---------------------------------------------------------------------------
 
 
-def test_create_role_htmx_returns_partial(auth_client_owner, test_organization):
+def test_create_role_turbo_returns_partial(auth_client_owner, test_organization):
     assert test_organization.id is not None
     response = auth_client_owner.post(
         "/roles/create",
@@ -348,7 +219,7 @@ def test_create_role_htmx_returns_partial(auth_client_owner, test_organization):
             "name": "Viewer",
             "organization_id": str(test_organization.id),
         },
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 200
     assert "<!DOCTYPE html>" not in response.text
@@ -356,7 +227,7 @@ def test_create_role_htmx_returns_partial(auth_client_owner, test_organization):
     assert 'data-bs-target="#editRoleModal' in response.text
 
 
-def test_create_role_non_htmx_redirects(auth_client_owner, test_organization):
+def test_create_role_non_turbo_redirects(auth_client_owner, test_organization):
     assert test_organization.id is not None
     response = auth_client_owner.post(
         "/roles/create",
@@ -369,10 +240,10 @@ def test_create_role_non_htmx_redirects(auth_client_owner, test_organization):
     assert response.headers["location"] == f"/organizations/{test_organization.id}"
 
 
-def test_delete_role_htmx_returns_partial(
+def test_delete_role_turbo_returns_partial(
     auth_client_owner, test_organization, session
 ):
-    """After deleting a custom role with HTMX, returns updated roles table partial."""
+    """After deleting a custom role via Turbo, returns updated roles table stream."""
     from utils.core.models import Role
 
     # Create a custom role to delete
@@ -388,14 +259,14 @@ def test_delete_role_htmx_returns_partial(
             "id": str(custom_role.id),
             "organization_id": str(test_organization.id),
         },
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 200
     assert "<!DOCTYPE html>" not in response.text
     assert "ToDelete" not in response.text
 
 
-def test_create_role_htmx_returns_modal_markup_for_new_role(
+def test_create_role_turbo_returns_modal_markup_for_new_role(
     auth_client_owner, test_organization
 ):
     assert test_organization.id is not None
@@ -405,7 +276,7 @@ def test_create_role_htmx_returns_modal_markup_for_new_role(
             "name": "Auditor",
             "organization_id": str(test_organization.id),
         },
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
 
     assert response.status_code == 200
@@ -418,7 +289,7 @@ def test_create_role_htmx_returns_modal_markup_for_new_role(
 # ---------------------------------------------------------------------------
 
 
-def test_create_invitation_htmx_returns_invitations_partial(
+def test_create_invitation_turbo_returns_invitations_partial(
     auth_client_owner, test_organization, member_role, mock_resend_send
 ):
     assert test_organization.id is not None
@@ -430,7 +301,7 @@ def test_create_invitation_htmx_returns_invitations_partial(
             "role_id": str(member_role.id),
             "organization_id": str(test_organization.id),
         },
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 200
     assert "<!DOCTYPE html>" not in response.text
@@ -442,24 +313,24 @@ def test_create_invitation_htmx_returns_invitations_partial(
 # ---------------------------------------------------------------------------
 
 
-def test_update_profile_htmx_returns_profile_display(auth_client):
+def test_update_profile_turbo_returns_profile_display(auth_client):
     response = auth_client.post(
         "/user/update",
         data={"name": "Updated Name"},
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 200
     assert "Updated Name" in response.text
     assert "<!DOCTYPE html>" not in response.text
 
 
-def test_update_profile_htmx_returns_display_without_oob_form(auth_client):
-    """After refactor, update_profile returns only the display partial — no
-    OOB form swap, since the edit form is fetched on demand via hx-get."""
+def test_update_profile_turbo_returns_display_without_form(auth_client):
+    """After refactor, update_profile's stream swaps in only the display
+    partial — no edit form, since it's fetched on demand via the Edit link."""
     response = auth_client.post(
         "/user/update",
         data={"name": "Synced Name"},
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 200
     assert "Synced Name" in response.text
@@ -486,9 +357,9 @@ def test_avatar_url_includes_cache_buster():
     )
 
 
-def test_avatar_upload_htmx_returns_oob_swap(auth_client):
-    """When an avatar is uploaded, the HTMX response should include an OOB
-    swap for the navbar avatar instead of a full page refresh."""
+def test_avatar_upload_turbo_returns_navbar_replace_stream(auth_client):
+    """When an avatar is uploaded, the Turbo Stream response should include a
+    replace action for the navbar avatar instead of a full page refresh."""
     import io
     from PIL import Image
 
@@ -499,27 +370,31 @@ def test_avatar_upload_htmx_returns_oob_swap(auth_client):
         "/user/update",
         data={"name": "Avatar User"},
         files={"avatar_file": ("test.png", buf, "image/png")},
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 200
-    assert response.headers.get("HX-Refresh") is None
-    assert 'id="navbar-avatar"' in response.text
-    assert 'hx-swap-oob="true"' in response.text
+    assert_turbo_stream(response)
+    actions = parse_streams(response)
+    navbar_actions = [a for a in actions if a.target == "navbar-avatar"]
+    assert len(navbar_actions) == 1
+    assert navbar_actions[0].action == "replace"
+    assert 'id="navbar-avatar"' in navbar_actions[0].content
 
 
-def test_name_only_update_htmx_no_refresh(auth_client):
-    """Name-only updates should return the display partial, not a full refresh."""
+def test_name_only_update_turbo_no_navbar_stream(auth_client):
+    """Name-only updates should return the display partial, not a navbar swap."""
     response = auth_client.post(
         "/user/update",
         data={"name": "No Refresh"},
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 200
-    assert "HX-Refresh" not in response.headers
+    actions = parse_streams(response)
+    assert not [a for a in actions if a.target == "navbar-avatar"]
     assert "No Refresh" in response.text
 
 
-def test_update_profile_non_htmx_redirects(auth_client):
+def test_update_profile_non_turbo_redirects(auth_client):
     response = auth_client.post(
         "/user/update",
         data={"name": "Updated Name"},
@@ -533,20 +408,20 @@ def test_update_profile_non_htmx_redirects(auth_client):
 # ---------------------------------------------------------------------------
 
 
-def test_duplicate_org_name_htmx_returns_toast(auth_client, test_organization):
+def test_duplicate_org_name_turbo_returns_toast(auth_client, test_organization):
     assert test_organization.id is not None
     response = auth_client.post(
         "/organizations/create",
         data={"name": test_organization.name},
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code in (400, 422)
     assert "toast" in response.text
     assert "<!DOCTYPE html>" not in response.text
-    _assert_htmx_error_is_oob_only(response)
+    _assert_error_toast_stream(response)
 
 
-def test_update_user_role_htmx_returns_member_modal_markup(
+def test_update_user_role_turbo_returns_member_modal_markup(
     auth_client_owner, org_member_user, test_organization, member_role
 ):
     assert org_member_user.id is not None
@@ -560,14 +435,14 @@ def test_update_user_role_htmx_returns_member_modal_markup(
             "organization_id": str(test_organization.id),
             "roles": [str(member_role.id)],
         },
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
 
     assert response.status_code == 200
     assert f'id="editUserRoleModal{org_member_user.id}"' in response.text
 
 
-def test_remove_last_non_owner_member_htmx_preserves_empty_state(
+def test_remove_last_non_owner_member_turbo_preserves_empty_state(
     auth_client_owner, org_member_user, test_organization
 ):
     assert org_member_user.id is not None
@@ -579,7 +454,7 @@ def test_remove_last_non_owner_member_htmx_preserves_empty_state(
             "user_id": str(org_member_user.id),
             "organization_id": str(test_organization.id),
         },
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
 
     assert response.status_code == 200
@@ -587,17 +462,17 @@ def test_remove_last_non_owner_member_htmx_preserves_empty_state(
 
 
 # ---------------------------------------------------------------------------
-# 2.3 — update_role HTMX refreshes both table and modal container
+# 2.3 — update_role Turbo stream refreshes both table and modal container
 # ---------------------------------------------------------------------------
 
 
-def test_update_role_htmx_refreshes_modal_container(
+def test_update_role_turbo_refreshes_modal_container(
     auth_client_owner, test_organization, session
 ):
     """
-    update_role HTMX response includes the updated role name in the table
-    and refreshes the role-modals-container OOB so the edit modal title
-    reflects the renamed role.
+    update_role's Turbo stream response includes the updated role name in the
+    table-update stream and a separate replace stream for
+    #role-modals-container so the edit modal title reflects the renamed role.
     """
     from utils.core.models import Role
 
@@ -615,7 +490,7 @@ def test_update_role_htmx_refreshes_modal_container(
             "name": "NewName",
             "organization_id": str(test_organization.id),
         },
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
 
     assert response.status_code == 200
@@ -624,9 +499,12 @@ def test_update_role_htmx_refreshes_modal_container(
     assert "NewName" in response.text
     # Old name is gone from the table
     assert "OldName" not in response.text
-    # OOB-refreshed modal container includes updated edit modal title
+    # Replaced modal container includes updated edit modal title
     assert "Edit Role: NewName" in response.text
-    assert 'id="role-modals-container"' in response.text
+    actions = parse_streams(response)
+    modal_actions = [a for a in actions if a.target == "role-modals-container"]
+    assert len(modal_actions) == 1
+    assert modal_actions[0].action == "replace"
 
 
 # ---------------------------------------------------------------------------
@@ -634,173 +512,110 @@ def test_update_role_htmx_refreshes_modal_container(
 # ---------------------------------------------------------------------------
 
 
-def test_login_rate_limit_htmx_returns_toast(unauth_client):
-    """Rate-limited HTMX login returns a 429 toast partial with Retry-After."""
+def test_login_rate_limit_turbo_returns_toast(unauth_client):
+    """Rate-limited Turbo login returns a 429 toast stream with Retry-After."""
     for _ in range(login_ip_limiter.max_attempts):
         unauth_client.post(
             "/account/login",
             data={"email": "nobody@example.com", "password": "wrongpass"},
-            headers=htmx_headers(),
+            headers=turbo_stream_headers(),
         )
 
     response = unauth_client.post(
         "/account/login",
         data={"email": "nobody@example.com", "password": "wrongpass"},
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 429
     assert "toast" in response.text
     assert "<!DOCTYPE html>" not in response.text
     assert "Retry-After" in response.headers
-    _assert_htmx_error_is_oob_only(response)
+    _assert_error_toast_stream(response)
 
 
-def test_forgot_password_rate_limit_htmx_returns_toast(unauth_client):
-    """Rate-limited HTMX forgot-password returns a 429 toast partial."""
+def test_forgot_password_rate_limit_turbo_returns_toast(unauth_client):
+    """Rate-limited Turbo forgot-password returns a 429 toast stream."""
     for _ in range(forgot_password_ip_limiter.max_attempts):
         unauth_client.post(
             "/account/forgot_password",
             data={"email": "user@example.com"},
-            headers=htmx_headers(),
+            headers=turbo_stream_headers(),
         )
 
     response = unauth_client.post(
         "/account/forgot_password",
         data={"email": "user@example.com"},
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 429
     assert "toast" in response.text
     assert "<!DOCTYPE html>" not in response.text
-    _assert_htmx_error_is_oob_only(response)
+    _assert_error_toast_stream(response)
 
 
 # ---------------------------------------------------------------------------
-# 6.1 — toast_response helper
+# 6.2 — Success toasts in Turbo mutation responses
 # ---------------------------------------------------------------------------
 
 
-def test_toast_response_helper():
-    """toast_response returns a TemplateResponse with toast HTML."""
-    templates = Jinja2Templates(directory="templates")
-    scope = {
-        "type": "http",
-        "headers": [],
-        "method": "GET",
-        "path": "/",
-        "query_string": b"",
-    }
-    request = Request(scope)
-    resp = toast_response(request, templates, "Hello", level="success", status_code=200)
-    body = resp.body.decode()
-    assert "toast" in body
-    assert "Hello" in body
-    assert resp.status_code == 200
-
-
-def test_toast_response_with_headers():
-    """toast_response forwards extra headers."""
-    templates = Jinja2Templates(directory="templates")
-    scope = {
-        "type": "http",
-        "headers": [],
-        "method": "GET",
-        "path": "/",
-        "query_string": b"",
-    }
-    request = Request(scope)
-    resp = toast_response(
-        request,
-        templates,
-        "Rate limited",
-        level="danger",
-        status_code=429,
-        headers={"Retry-After": "60"},
-    )
-    assert resp.headers["Retry-After"] == "60"
-
-
-def test_append_toast_helper():
-    """append_toast appends toast HTML to an existing TemplateResponse."""
-    templates = Jinja2Templates(directory="templates")
-    scope = {
-        "type": "http",
-        "headers": [],
-        "method": "GET",
-        "path": "/",
-        "query_string": b"",
-    }
-    request = Request(scope)
-    original = templates.TemplateResponse(
-        request,
-        "base/partials/toast.html",
-        {"message": "original", "level": "info"},
-    )
-    result = append_toast(original, request, templates, "appended", level="success")
-    body = result.body.decode()
-    assert "original" in body
-    assert "appended" in body
-
-
-# ---------------------------------------------------------------------------
-# 6.2 — Success toasts in HTMX mutation responses
-# ---------------------------------------------------------------------------
-
-
-def test_update_profile_htmx_includes_success_toast(auth_client):
+def test_update_profile_turbo_includes_success_toast(auth_client):
     response = auth_client.post(
         "/user/update",
         data={"name": "Toast Name"},
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 200
     assert "Profile updated successfully" in response.text
     assert "toast" in response.text
 
 
-def test_edit_profile_form_htmx_returns_form_partial(auth_client):
-    """GET /user/edit-form with HTMX headers returns the edit form partial."""
-    response = auth_client.get("/user/edit-form", headers=htmx_headers())
+def test_edit_profile_form_turbo_frame_returns_form_partial(auth_client):
+    """GET /user/edit-form for a turbo-frame request returns the edit form partial."""
+    response = auth_client.get(
+        "/user/edit-form", headers=turbo_frame_headers("profile-frame")
+    )
     assert response.status_code == 200
     assert "<form" in response.text
     assert "<!DOCTYPE html>" not in response.text
 
 
-def test_edit_profile_form_non_htmx_redirects(auth_client):
-    """GET /user/edit-form without HTMX headers redirects to profile."""
+def test_edit_profile_form_non_frame_redirects(auth_client):
+    """GET /user/edit-form outside a turbo-frame request redirects to profile."""
     response = auth_client.get("/user/edit-form")
     assert response.status_code == 303
     assert response.headers["location"] == "/user/profile"
 
 
-def test_profile_display_htmx_returns_display_partial(auth_client):
-    """GET /user/profile-display with HTMX headers returns the display partial."""
-    response = auth_client.get("/user/profile-display", headers=htmx_headers())
+def test_profile_display_turbo_frame_returns_display_partial(auth_client):
+    """GET /user/profile-display for a turbo-frame request returns the display partial."""
+    response = auth_client.get(
+        "/user/profile-display", headers=turbo_frame_headers("profile-frame")
+    )
     assert response.status_code == 200
     assert "<!DOCTYPE html>" not in response.text
 
 
-def test_profile_display_non_htmx_redirects(auth_client):
-    """GET /user/profile-display without HTMX headers redirects to profile."""
+def test_profile_display_non_frame_redirects(auth_client):
+    """GET /user/profile-display outside a turbo-frame request redirects to profile."""
     response = auth_client.get("/user/profile-display")
     assert response.status_code == 303
     assert response.headers["location"] == "/user/profile"
 
 
-def test_create_role_htmx_includes_success_toast(auth_client_owner, test_organization):
+def test_create_role_turbo_includes_success_toast(auth_client_owner, test_organization):
     response = auth_client_owner.post(
         "/roles/create",
         data={
             "name": "ToastRole",
             "organization_id": str(test_organization.id),
         },
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 200
     assert "Role created successfully" in response.text
 
 
-def test_delete_role_htmx_includes_success_toast(
+def test_delete_role_turbo_includes_success_toast(
     auth_client_owner, test_organization, session
 ):
     from utils.core.models import Role
@@ -816,13 +631,13 @@ def test_delete_role_htmx_includes_success_toast(
             "id": str(custom_role.id),
             "organization_id": str(test_organization.id),
         },
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 200
     assert "Role deleted successfully" in response.text
 
 
-def test_update_role_htmx_includes_success_toast(
+def test_update_role_turbo_includes_success_toast(
     auth_client_owner, test_organization, session
 ):
     from utils.core.models import Role
@@ -839,19 +654,19 @@ def test_update_role_htmx_includes_success_toast(
             "name": "Renamed",
             "organization_id": str(test_organization.id),
         },
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 200
     assert "Role updated successfully" in response.text
 
 
-def test_update_role_htmx_triggers_modal_cleanup(
+def test_update_role_turbo_triggers_modal_cleanup(
     auth_client_owner, test_organization, session
 ):
-    """The response must include an HX-Trigger header so the client can
-    dismiss the Bootstrap modal and its backdrop.  The OOB swap for
-    #role-modals-container replaces the modal element before afterRequest
-    fires, leaving the backdrop stuck on screen."""
+    """The response must include a dismiss_modals stream action so the client
+    can close the Bootstrap modal and its backdrop.  The replace stream for
+    #role-modals-container replaces the modal element itself, so the client
+    needs an explicit signal to also clean up the backdrop."""
     from utils.core.models import Role
 
     custom_role = Role(name="TriggerRole", organization_id=test_organization.id)
@@ -866,16 +681,15 @@ def test_update_role_htmx_triggers_modal_cleanup(
             "name": "TriggerRenamed",
             "organization_id": str(test_organization.id),
         },
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 200
-    trigger = response.headers.get("HX-Trigger")
-    assert trigger is not None, "Missing HX-Trigger response header"
-    assert "modalDismiss" in trigger
+    actions = parse_streams(response)
+    assert any(a.action == "dismiss_modals" for a in actions)
 
 
-def test_create_role_htmx_triggers_modal_cleanup(auth_client_owner, test_organization):
-    """create_role must send HX-Trigger: modalDismiss to close the
+def test_create_role_turbo_triggers_modal_cleanup(auth_client_owner, test_organization):
+    """create_role must include a dismiss_modals stream action to close the
     create-role Bootstrap modal after the swap."""
     response = auth_client_owner.post(
         "/roles/create",
@@ -883,19 +697,18 @@ def test_create_role_htmx_triggers_modal_cleanup(auth_client_owner, test_organiz
             "name": "ModalCleanupRole",
             "organization_id": str(test_organization.id),
         },
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 200
-    trigger = response.headers.get("HX-Trigger")
-    assert trigger is not None, "Missing HX-Trigger response header"
-    assert "modalDismiss" in trigger
+    actions = parse_streams(response)
+    assert any(a.action == "dismiss_modals" for a in actions)
 
 
-def test_create_invitation_htmx_triggers_modal_cleanup(
+def test_create_invitation_turbo_triggers_modal_cleanup(
     auth_client_owner, test_organization, member_role, mock_resend_send
 ):
-    """create_invitation must send HX-Trigger: modalDismiss to close
-    the invite-member Bootstrap modal after the swap."""
+    """create_invitation must include a dismiss_modals stream action to
+    close the invite-member Bootstrap modal after the swap."""
     response = auth_client_owner.post(
         "/invitations/",
         data={
@@ -903,19 +716,18 @@ def test_create_invitation_htmx_triggers_modal_cleanup(
             "role_id": str(member_role.id),
             "organization_id": str(test_organization.id),
         },
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 200
-    trigger = response.headers.get("HX-Trigger")
-    assert trigger is not None, "Missing HX-Trigger response header"
-    assert "modalDismiss" in trigger
+    actions = parse_streams(response)
+    assert any(a.action == "dismiss_modals" for a in actions)
 
 
-def test_update_user_role_htmx_triggers_modal_cleanup(
+def test_update_user_role_turbo_triggers_modal_cleanup(
     auth_client_owner, org_member_user, test_organization, member_role
 ):
-    """update_user_role must send HX-Trigger: modalDismiss to close
-    the edit-user-role Bootstrap modal after the swap."""
+    """update_user_role must include a dismiss_modals stream action to
+    close the edit-user-role Bootstrap modal after the swap."""
     assert org_member_user.id is not None
     assert test_organization.id is not None
     assert member_role.id is not None
@@ -927,15 +739,14 @@ def test_update_user_role_htmx_triggers_modal_cleanup(
             "organization_id": str(test_organization.id),
             "roles": [str(member_role.id)],
         },
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 200
-    trigger = response.headers.get("HX-Trigger")
-    assert trigger is not None, "Missing HX-Trigger response header"
-    assert "modalDismiss" in trigger
+    actions = parse_streams(response)
+    assert any(a.action == "dismiss_modals" for a in actions)
 
 
-def test_create_invitation_htmx_includes_success_toast(
+def test_create_invitation_turbo_includes_success_toast(
     auth_client_owner, test_organization, member_role, mock_resend_send
 ):
     response = auth_client_owner.post(
@@ -945,13 +756,13 @@ def test_create_invitation_htmx_includes_success_toast(
             "role_id": str(member_role.id),
             "organization_id": str(test_organization.id),
         },
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 200
     assert "Invitation sent successfully" in response.text
 
 
-def test_delete_invitation_htmx_returns_members_partial(
+def test_delete_invitation_turbo_returns_members_partial(
     auth_client_owner,
     test_organization,
     member_role,
@@ -975,7 +786,7 @@ def test_delete_invitation_htmx_returns_members_partial(
             "invitation_id": str(invitation.id),
             "organization_id": str(test_organization.id),
         },
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 200
     assert "<!DOCTYPE html>" not in response.text
@@ -983,7 +794,7 @@ def test_delete_invitation_htmx_returns_members_partial(
     assert "cancelme@example.com" not in response.text
 
 
-def test_delete_invitation_htmx_includes_success_toast(
+def test_delete_invitation_turbo_includes_success_toast(
     auth_client_owner,
     test_organization,
     member_role,
@@ -1007,13 +818,13 @@ def test_delete_invitation_htmx_includes_success_toast(
             "invitation_id": str(invitation.id),
             "organization_id": str(test_organization.id),
         },
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 200
     assert "Invitation cancelled successfully" in response.text
 
 
-def test_update_user_role_htmx_includes_success_toast(
+def test_update_user_role_turbo_includes_success_toast(
     auth_client_owner, org_member_user, test_organization, member_role
 ):
     response = auth_client_owner.post(
@@ -1023,13 +834,13 @@ def test_update_user_role_htmx_includes_success_toast(
             "organization_id": str(test_organization.id),
             "roles": [str(member_role.id)],
         },
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 200
     assert "User role updated successfully" in response.text
 
 
-def test_remove_user_htmx_includes_success_toast(
+def test_remove_user_turbo_includes_success_toast(
     auth_client_owner, org_member_user, test_organization
 ):
     response = auth_client_owner.post(
@@ -1038,25 +849,24 @@ def test_remove_user_htmx_includes_success_toast(
             "user_id": str(org_member_user.id),
             "organization_id": str(test_organization.id),
         },
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 200
     assert "User removed from organization" in response.text
 
 
 # ---------------------------------------------------------------------------
-# 7 — Architectural guard: ban hx-on::after-request in templates
+# 7 — Architectural guard: no htmx attributes anywhere in templates
 # ---------------------------------------------------------------------------
 
 
-def test_no_templates_use_hx_on_after_request():
-    """In HTMX 2.0 afterRequest fires BEFORE OOB swaps, so any handler
-    on an element that is replaced by an OOB swap will silently fail.
-    Use hx-on::after-settle instead (fires after swaps complete)."""
+def test_no_templates_use_htmx_attributes():
+    """This app migrated from htmx to Turbo — no template should carry an
+    hx-* attribute (dead markup at best, misleading at worst)."""
     import pathlib
     import re
 
-    attr_pattern = re.compile(r"hx-on::after-request=|hx-on:htmx:after-request=")
+    attr_pattern = re.compile(r'\bhx-[a-zA-Z-]+\s*=')
 
     templates_dir = pathlib.Path(__file__).resolve().parent.parent / "templates"
     violations = []
@@ -1065,10 +875,7 @@ def test_no_templates_use_hx_on_after_request():
         if attr_pattern.search(text):
             violations.append(str(path.relative_to(templates_dir)))
 
-    assert violations == [], (
-        f"Templates must not use hx-on::after-request (fires before OOB swaps in HTMX 2.0). "
-        f"Use hx-on::after-settle instead. Violations: {violations}"
-    )
+    assert violations == [], f"Templates must not use hx-* attributes: {violations}"
 
 
 # ---------------------------------------------------------------------------
@@ -1076,23 +883,23 @@ def test_no_templates_use_hx_on_after_request():
 
 
 def test_flash_set_and_pop_roundtrip():
-    """set_flash stores a one-shot message in the session; pop_flash consumes it."""
+    """set_flash() queues a one-shot message in the session; pop_flash() drains it."""
     from unittest.mock import MagicMock
 
-    from utils.core.flash import FLASH_SESSION_KEY, pop_flash, set_flash
+    from utils.core.flash import pop_flash, set_flash
 
     request = MagicMock()
     request.session = {}
 
     set_flash(request, "Email address verified and added to your account.")
-    assert FLASH_SESSION_KEY in request.session
+    assert "flash" in request.session
 
-    flash = pop_flash(request)
-    assert flash == {
+    flashed = pop_flash(request)
+    assert flashed == {
         "message": "Email address verified and added to your account.",
         "level": "success",
     }
-    assert FLASH_SESSION_KEY not in request.session
+    assert "flash" not in request.session
     assert pop_flash(request) is None
 
 
@@ -1115,7 +922,7 @@ def test_flash_appears_once_on_next_page(unauth_client, test_account, session):
 
 
 # ---------------------------------------------------------------------------
-# 8 - HTMX matrix gaps (dashboard, org CRUD, resend)
+# 8 - Turbo matrix gaps (dashboard, org CRUD, resend)
 # ---------------------------------------------------------------------------
 
 
@@ -1125,36 +932,7 @@ def _url(name: str, **path_params) -> str:
     return str(app.url_path_for(name, **path_params))
 
 
-def test_update_organization_htmx_returns_hx_redirect(
-    auth_client_owner, test_organization
-):
-    assert test_organization.id is not None
-    response = auth_client_owner.post(
-        _url("update_organization", org_id=test_organization.id),
-        data={"name": "HTMX Updated Org"},
-        headers=htmx_headers(),
-        follow_redirects=False,
-    )
-    assert response.status_code == 200
-    assert "HX-Redirect" in response.headers
-    assert str(test_organization.id) in response.headers["HX-Redirect"]
-
-
-def test_delete_organization_htmx_returns_hx_redirect(
-    auth_client_owner, test_organization
-):
-    assert test_organization.id is not None
-    response = auth_client_owner.post(
-        _url("delete_organization", org_id=test_organization.id),
-        headers=htmx_headers(),
-        follow_redirects=False,
-    )
-    assert response.status_code == 200
-    assert "HX-Redirect" in response.headers
-    assert "profile" in response.headers["HX-Redirect"]
-
-
-def test_resend_invitation_htmx_returns_members_partial(
+def test_resend_invitation_turbo_returns_members_partial(
     auth_client_owner,
     test_organization,
     test_invitation,
@@ -1168,7 +946,7 @@ def test_resend_invitation_htmx_returns_members_partial(
             "invitation_id": str(test_invitation.id),
             "organization_id": str(test_organization.id),
         },
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 200
     assert "<!DOCTYPE html>" not in response.text
@@ -1176,14 +954,14 @@ def test_resend_invitation_htmx_returns_members_partial(
     assert "Invitation resent" in response.text
 
 
-def test_csrf_enabled_htmx_login_returns_toast(unauth_client, monkeypatch):
+def test_csrf_enabled_turbo_login_returns_toast(unauth_client, monkeypatch):
     monkeypatch.setenv("CSRF_ENABLED", "1")
 
     response = unauth_client.post(
         "/account/login",
         data={"email": "nobody@example.com", "password": "wrong"},
-        headers=htmx_headers(),
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 403
     assert "toast" in response.text
-    _assert_htmx_error_is_oob_only(response)
+    _assert_error_toast_stream(response)

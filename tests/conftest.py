@@ -26,6 +26,7 @@ from utils.core.auth import (
     generate_session_token,
     get_password_hash,
 )
+from fastapi_turbo import TURBO_STREAM_MEDIA_TYPE
 from main import app
 from datetime import datetime, UTC, timedelta
 from utils.core.rate_limit import clear_all_rate_limiters
@@ -583,12 +584,17 @@ def mock_resend_send(mock_email_response):
         yield mock
 
 
-# --- HTMX Test Helpers ---
+# --- Turbo Test Helpers ---
 
 
-def htmx_headers() -> dict:
-    """Headers that simulate an HTMX request."""
-    return {"HX-Request": "true", "HX-Current-URL": "http://testserver/"}
+def turbo_stream_headers() -> dict:
+    """Headers that simulate a Turbo Stream-accepting request."""
+    return {"Accept": TURBO_STREAM_MEDIA_TYPE}
+
+
+def turbo_frame_headers(frame_id: str) -> dict:
+    """Headers that simulate a <turbo-frame> navigation request."""
+    return {"Turbo-Frame": frame_id}
 
 
 def is_html_partial(response) -> bool:

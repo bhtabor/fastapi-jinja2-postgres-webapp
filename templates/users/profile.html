@@ -8,7 +8,7 @@
 <div class="container mt-5">
     <h1 class="mb-4">User Profile</h1>
 
-    <!-- Profile (display or edit, server-driven via HTMX) -->
+    <!-- Profile (display or edit, server-driven via a Turbo Frame) -->
     <div class="card mb-4" id="profile-card">
         {% include 'users/partials/profile_display.html' %}
     </div>
@@ -19,8 +19,7 @@
             Communication Preferences
         </div>
         <div class="card-body">
-            <form action="{{ url_for('update_communication_preferences') }}" method="post"
-                  hx-post="{{ url_for('update_communication_preferences') }}" hx-swap="none">
+            <form action="{{ url_for('update_communication_preferences') }}" method="post">
                   {% include 'base/partials/csrf_field.html' %}
                 {% include 'partials/communication_preferences_fields.html' with context %}
                 <button type="submit" class="btn btn-primary mt-3">Save Preferences</button>
@@ -33,59 +32,7 @@
         <div class="card-header">
             Email Addresses
         </div>
-        <div class="card-body">
-            {% if account_emails %}
-            <ul class="list-group mb-3 profile-email-list">
-                {% for email in account_emails %}
-                <li class="list-group-item profile-email-list-item">
-                    <div class="profile-email-list-item-body">
-                        <div class="profile-email-leading">
-                            <span class="profile-email-address">{{ email.email }}</span>
-                            {% if email.is_primary %}
-                                <span class="badge bg-primary">Primary</span>
-                            {% elif not email.verified %}
-                                <span class="badge bg-warning">Pending verification</span>
-                            {% else %}
-                                <span class="badge bg-secondary">Secondary</span>
-                            {% endif %}
-                        </div>
-                        <div class="profile-email-actions">
-                            {% if not email.is_primary and email.verified %}
-                            <form action="{{ url_for('promote_email') }}" method="post" class="profile-email-action-form mb-0"
-                                  hx-post="{{ url_for('promote_email') }}" hx-swap="none">
-                                  {% include 'base/partials/csrf_field.html' %}
-                                <input type="hidden" name="email_id" value="{{ email.id }}">
-                                <button type="submit" class="btn btn-sm btn-outline-primary">Make Primary</button>
-                            </form>
-                            {% endif %}
-                            {% if not email.is_primary %}
-                            <form action="{{ url_for('remove_email') }}" method="post" class="profile-email-action-form mb-0"
-                                  hx-post="{{ url_for('remove_email') }}" hx-swap="none">
-                                  {% include 'base/partials/csrf_field.html' %}
-                                <input type="hidden" name="email_id" value="{{ email.id }}">
-                                <button type="submit" class="btn btn-sm btn-outline-danger">Remove</button>
-                            </form>
-                            {% endif %}
-                        </div>
-                    </div>
-                </li>
-                {% endfor %}
-            </ul>
-            {% endif %}
-
-            {% if account_emails|length < max_emails %}
-            <form action="{{ url_for('add_email') }}" method="post" class="profile-add-email-form"
-                  hx-post="{{ url_for('add_email') }}" hx-swap="none"
-                  hx-on::after-settle="this.reset()">
-                  {% include 'base/partials/csrf_field.html' %}
-                <div class="input-group">
-                    <input type="email" class="form-control" name="new_email" placeholder="Add Email Address" required>
-                    <button type="submit" class="btn btn-primary">Add Email</button>
-                </div>
-                <p class="form-text mt-1">A verification link will be sent to the new email address.</p>
-            </form>
-            {% endif %}
-        </div>
+        {% include 'users/partials/email_addresses.html' %}
     </div>
 
     <!-- Change Password -->

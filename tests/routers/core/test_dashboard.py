@@ -2,7 +2,7 @@ from main import app
 from sqlmodel import Session
 from utils.core.models import Organization, User
 from utils.app.models import OrganizationResource
-from tests.conftest import add_owner_to_organization, htmx_headers
+from tests.conftest import add_owner_to_organization
 
 
 def test_dashboard_authenticated(auth_client_owner):
@@ -70,34 +70,10 @@ def test_dashboard_no_orgs(auth_client):
     assert "orgSelect" not in response.text
 
 
-def test_select_organization_sets_cookie(auth_client_owner, test_organization):
-    """Test that selecting an organization sets the cookie."""
-    response = auth_client_owner.post(
-        app.url_path_for("select_organization", org_id=test_organization.id),
-        headers=htmx_headers(),
-    )
-    assert response.status_code == 200
-    assert "HX-Redirect" in response.headers
-    # Check the cookie was set
-    assert "selected_organization_id" in response.headers.get("set-cookie", "")
-
-
-def test_select_organization_non_member(auth_client, test_organization):
-    """Test that non-members cannot select an organization they don't belong to."""
-    response = auth_client.post(
-        app.url_path_for("select_organization", org_id=test_organization.id),
-        headers=htmx_headers(),
-    )
-    assert response.status_code == 200
-    assert "HX-Redirect" in response.headers
-    # Should NOT set a cookie since user is not a member
-    assert "selected_organization_id" not in response.headers.get("set-cookie", "")
-
-
-def test_select_organization_non_htmx_sets_cookie_and_redirects(
+def test_select_organization_sets_cookie_and_redirects(
     auth_client_owner, test_organization
 ):
-    """Without htmx, selecting an organization redirects (PRG) and sets the cookie."""
+    """Selecting an organization redirects (Turbo Drive follows it) and sets the cookie."""
     response = auth_client_owner.post(
         app.url_path_for("select_organization", org_id=test_organization.id),
     )
@@ -106,8 +82,8 @@ def test_select_organization_non_htmx_sets_cookie_and_redirects(
     assert "selected_organization_id" in response.headers.get("set-cookie", "")
 
 
-def test_select_organization_non_htmx_non_member(auth_client, test_organization):
-    """Without htmx, non-members are redirected without a cookie being set."""
+def test_select_organization_non_member(auth_client, test_organization):
+    """Non-members are redirected without a cookie being set."""
     response = auth_client.post(
         app.url_path_for("select_organization", org_id=test_organization.id),
     )

@@ -21,31 +21,25 @@
     <meta name="msapplication-TileColor" content="#da532c">
     <meta name="theme-color" content="#ffffff">
     <meta name="csrf-token" content="{{ request.state.csrf_token }}">
-    <!-- Scripts in <head> with defer so they are NOT re-processed during
-         htmx hx-boost body swaps. This keeps our component JS (ui.js) and its
-         document-level event delegation working across AJAX navigations. defer
-         maintains execution order and waits for DOM parsing to complete. -->
-    <script defer src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.8/dist/htmx.min.js"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/htmx-ext-remove-me@2.0.0/remove-me.js"></script>
-    <script defer src="{{ url_for('static', path='js/ui.js') }}"></script>
-    <script defer src="{{ url_for('static', path='js/app.js') }}"></script>
+    <!-- Scripts in <head> with defer so they are NOT re-executed during
+         Turbo Drive body swaps (Turbo merges <head> and only replaces <body>).
+         This keeps our component JS (ui.js) and its document-level event
+         delegation working across Turbo navigations. defer maintains execution
+         order and waits for DOM parsing to complete. -->
+    {{ turbo_script() }}
+    <script defer src="{{ url_for('static', path='js/ui.js') }}" data-turbo-track="reload"></script>
+    <script defer src="{{ url_for('static', path='js/app.js') }}" data-turbo-track="reload"></script>
     {% block extra_head %}{% endblock %}
 </head>
 <body class="min-vh-100 d-flex flex-column">
     <div id="toast-container"
          class="toast-container position-fixed bottom-0 end-0 p-3"
-         hx-ext="remove-me"
          aria-live="polite">
       {% set flash = request.state.flash %}
       {% if flash %}
-      <div class="toast align-items-center text-bg-{{ flash.level|default('success') }} border-0 show"
-           role="alert" aria-atomic="true" remove-me="5s">
-        <div class="d-flex">
-          <div class="toast-body">{{ flash.message }}</div>
-          <button type="button" class="btn-close btn-close-white me-2 m-auto"
-                  data-bs-dismiss="toast" aria-label="Close"></button>
-        </div>
-      </div>
+      {% with message = flash.message, level = flash.level|default('success') %}
+      {% include 'base/partials/toast_item.html' %}
+      {% endwith %}
       {% endif %}
     </div>
 

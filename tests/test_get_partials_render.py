@@ -1,4 +1,4 @@
-"""Runtime smoke tests: HTMX partial GET routes must render without template errors."""
+"""Runtime smoke tests: Turbo Frame GET routes must render without template errors."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import pytest
 
 from main import app
-from tests.conftest import htmx_headers
+from tests.conftest import turbo_frame_headers
 from tests.frontend.helpers import assert_partial_rendered
 
 
@@ -34,29 +34,29 @@ PARTIAL_GET_CASES = [
         "profile_display",
         "auth_client",
         _url("profile_display"),
-        marker="profile-card",
+        marker="profile-frame",
     ),
 ]
 
 
 @pytest.mark.usefixtures("env_vars")
-class TestHtmxPartialGetRender:
+class TestTurboFramePartialGetRender:
     @pytest.mark.parametrize("case", PARTIAL_GET_CASES, ids=lambda c: c.id)
     def test_partial_get_renders(
         self, case: PartialGetCase, request: pytest.FixtureRequest
     ):
         client = request.getfixturevalue(case.client_fixture)
-        response = client.get(case.path, headers=htmx_headers())
+        response = client.get(case.path, headers=turbo_frame_headers("profile-frame"))
         assert_partial_rendered(response)
         if case.marker:
             assert case.marker in response.text
 
-    def test_profile_edit_form_non_htmx_redirects_to_profile(self, auth_client):
+    def test_profile_edit_form_non_frame_redirects_to_profile(self, auth_client):
         response = auth_client.get(_url("edit_profile_form"))
         assert response.status_code == 303
         assert response.headers["location"] == _url("read_profile")
 
-    def test_profile_display_non_htmx_redirects_to_profile(self, auth_client):
+    def test_profile_display_non_frame_redirects_to_profile(self, auth_client):
         response = auth_client.get(_url("profile_display"))
         assert response.status_code == 303
         assert response.headers["location"] == _url("read_profile")

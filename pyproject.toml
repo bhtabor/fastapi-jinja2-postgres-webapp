@@ -21,6 +21,7 @@ dependencies = [
     "pillow>=11.0.0",
     "psycopg2-binary>=2.9.10",
     "itsdangerous>=2.2.0",
+    "fastapi-turbo==0.1.0",
 ]
 
 [dependency-groups]
@@ -132,3 +133,7 @@ python_dir = "."
 template_dir = "templates"
 route_file_patterns = ["main.py", "routers/**/*.py"]
 auto_check = false
+# turbo_script is a Jinja environment global (registered via env.globals),
+# not a per-render context variable, so no route ever "provides" it.
+ignore_variables = ["request", "url_for", "turbo_script"]
+

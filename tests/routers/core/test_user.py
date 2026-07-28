@@ -2,7 +2,7 @@ from fastapi.testclient import TestClient
 from httpx import Response
 from sqlmodel import Session
 from unittest.mock import patch, MagicMock
-from tests.conftest import SetupError
+from tests.conftest import SetupError, turbo_stream_headers
 from main import app
 from utils.core.models import User, Role, Organization
 from utils.core.images import InvalidImageError
@@ -343,7 +343,7 @@ def test_update_communication_preferences_master_off_clears_subs(
     assert test_user.comm_marketing is False
 
 
-def test_update_communication_preferences_htmx(
+def test_update_communication_preferences_turbo(
     auth_client: TestClient, test_user: User, session: Session
 ):
     response = auth_client.post(
@@ -352,7 +352,7 @@ def test_update_communication_preferences_htmx(
             "comm_opt_in": "on",
             "comm_updates": "on",
         },
-        headers={"HX-Request": "true"},
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 200
     assert "Communication preferences updated." in response.text

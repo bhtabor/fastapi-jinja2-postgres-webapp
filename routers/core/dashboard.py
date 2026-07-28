@@ -1,16 +1,20 @@
 from typing import Optional, List
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
+from fastapi_turbo import turbo_script
 from sqlmodel import Session, select, col
 from utils.core.dependencies import get_user_with_relations, get_session
-from utils.core.htmx import is_htmx_request
 from utils.core.models import User, Organization
 from utils.app.enums import AppPermissions
 from utils.app.models import OrganizationResource
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+# base.html calls turbo_script(); this router never needs stream/fragment
+# helpers, so it stays on plain Jinja2Templates and just registers the
+# turbo_script global TurboTemplates would.
 templates = Jinja2Templates(directory="templates")
+templates.env.globals["turbo_script"] = turbo_script
 
 
 # --- Authenticated Routes ---
@@ -86,11 +90,7 @@ async def select_organization(
 ):
     """Set the selected organization cookie and redirect back to dashboard."""
     dashboard_url = str(request.url_for("read_dashboard"))
-    if is_htmx_request(request):
-        response: Response = Response(status_code=200)
-        response.headers["HX-Redirect"] = dashboard_url
-    else:
-        response = RedirectResponse(url=dashboard_url, status_code=303)
+    response = RedirectResponse(url=dashboard_url, status_code=303)
 
     # Verify user is a member of this organization
     org = next((o for o in user.organizations if o.id == org_id), None)

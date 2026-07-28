@@ -124,7 +124,7 @@ class TestPostRedirectChainsRender:
         )
         assert_redirect_renders_full_page(auth_client_owner, response)
 
-    def test_create_role_non_htmx_redirect_renders(
+    def test_create_role_non_turbo_redirect_renders(
         self, auth_client_owner, test_organization
     ):
         assert test_organization.id is not None

@@ -1,5 +1,8 @@
-{# Partial: profile display card. Swapped into #profile-card. #}
+{# Partial: profile display card, wrapped in the profile-frame turbo frame.
+   Included in profile.html for full-page renders and returned alone for
+   turbo-frame navigations (Edit/Cancel). #}
 {% from 'base/macros/silhouette.html' import render_silhouette %}
+<turbo-frame id="profile-frame">
 <div class="card-header">
     Basic Information
 </div>
@@ -13,8 +16,6 @@
             {{ render_silhouette(width=150, height=150) }}
         {% endif %}
     </div>
-    <button class="btn btn-primary mt-3"
-            hx-get="{{ url_for('edit_profile_form') }}"
-            hx-target="#profile-card"
-            hx-swap="innerHTML">Edit</button>
+    <a href="{{ url_for('edit_profile_form') }}" class="btn btn-primary mt-3">Edit</a>
 </div>
+</turbo-frame>

@@ -23,16 +23,15 @@ def test_valid_endpoints(validate_endpoints):
 
 
 # ---------------------------------------------------------------------------
-# HTMX-specific template assertions (Phase 1-5)
+# Turbo-specific template assertions (Phase 1-5)
 # ---------------------------------------------------------------------------
 
 
-def test_base_template_includes_htmx():
+def test_base_template_includes_turbo():
+    """base.html calls the turbo_script() global; the rendered CDN URL and
+    data-turbo-track attribute are asserted at runtime in test_scripts_turbo.py."""
     content = Path("templates/base.html").read_text()
-    assert "htmx.org" in content, "base.html must load the HTMX library"
-    assert (
-        'src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.8/dist/htmx.min.js"' in content
-    )
+    assert "turbo_script()" in content, "base.html must call turbo_script()"
 
 
 def test_base_template_includes_toast_container():
@@ -71,16 +70,16 @@ def test_register_template_hides_form_for_authenticated_invitation_warning():
 
 
 def test_toast_partial_exists():
-    assert Path("templates/base/partials/toast.html").is_file()
+    assert Path("templates/base/partials/toast_item.html").is_file()
 
 
 @pytest.mark.parametrize(
     "partial",
     [
         "organization/partials/roles_table.html",
-        "organization/partials/role_row.html",
+        "organization/partials/role_modals.html",
         "organization/partials/members_table.html",
-        "organization/partials/member_row.html",
+        "organization/partials/member_modals.html",
         "organization/partials/invitations_list.html",
         "users/partials/profile_display.html",
         "users/partials/profile_form.html",
@@ -92,65 +91,61 @@ def test_organization_partial_exists(partial):
 
 
 def test_roles_table_has_stable_id():
-    content = Path("templates/organization/modals/roles_card.html").read_text()
+    content = Path("templates/organization/partials/roles_table.html").read_text()
     assert 'id="roles-table-body"' in content
 
 
 def test_members_table_has_stable_id():
-    content = Path("templates/organization/modals/members_card.html").read_text()
+    content = Path("templates/organization/partials/members_table.html").read_text()
     assert 'id="members-table-body"' in content
 
 
 def test_invitations_list_has_stable_id():
-    content = Path("templates/organization/modals/members_card.html").read_text()
+    content = Path("templates/organization/partials/members_table.html").read_text()
     assert 'id="invitations-list"' in content
 
 
-def test_create_role_form_has_hx_post():
+def test_create_role_form_exists():
     content = Path("templates/organization/modals/roles_card.html").read_text()
-    assert "hx-post" in content
+    assert "url_for('create_role')" in content
 
 
-def test_invite_member_form_has_hx_post():
+def test_invite_member_form_exists():
     content = Path("templates/organization/modals/members_card.html").read_text()
-    assert "hx-post" in content
+    assert "url_for('create_invitation')" in content
 
 
 def test_pending_invitations_include_cancel_confirm():
     content = Path("templates/organization/partials/invitations_list.html").read_text()
     assert "url_for('delete_invitation')" in content
     assert "url_for('resend_invitation')" in content
-    assert "hx-confirm" in content
+    assert "data-turbo-confirm" in content
 
 
-def test_remove_member_forms_include_confirm():
-    for path in (
-        "templates/organization/modals/members_card.html",
-        "templates/organization/partials/members_table.html",
-        "templates/organization/partials/member_row.html",
-    ):
-        content = Path(path).read_text()
-        assert "url_for('remove_user_from_organization')" in content
-        assert "hx-confirm" in content
+def test_remove_member_form_includes_confirm():
+    content = Path("templates/organization/partials/members_table.html").read_text()
+    assert "url_for('remove_user_from_organization')" in content
+    assert "data-turbo-confirm" in content
 
 
-def test_edit_organization_form_has_hx_post():
+def test_edit_organization_form_exists():
     content = Path(
         "templates/organization/modals/edit_organization_modal.html"
     ).read_text()
-    assert "hx-post" in content
+    assert "url_for('update_organization'" in content
 
 
-def test_delete_organization_form_has_hx_post():
+def test_delete_organization_form_exists():
     content = Path(
         "templates/organization/modals/delete_organization_modal.html"
     ).read_text()
-    assert "hx-post" in content
+    assert "url_for('delete_organization'" in content
 
 
-def test_nav_has_hx_boost():
+def test_nav_has_no_hx_boost():
+    """Turbo Drive intercepts same-origin navigation by default — no opt-in needed."""
     content = Path("templates/base/partials/header.html").read_text()
-    assert 'hx-boost="true"' in content
+    assert "hx-boost" not in content
 
 
 class TestMobileNavConsolidation:

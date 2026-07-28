@@ -7,6 +7,7 @@ from html import unescape
 from sqlalchemy import inspect
 
 from main import app
+from tests.conftest import turbo_stream_headers
 from utils.core.models import (
     User,
     AccountEmail,
@@ -500,10 +501,10 @@ def test_register_weak_password_error_restates_requirements(
     )
 
 
-def test_register_weak_password_htmx_error_restates_requirements(
+def test_register_weak_password_turbo_error_restates_requirements(
     unauth_client: TestClient, session: Session
 ):
-    """Issue #156: HTMX error toast for weak password must restate the security policy requirements."""
+    """Issue #156: Turbo error toast for weak password must restate the security policy requirements."""
     response = unauth_client.post(
         app.url_path_for("register"),
         data={
@@ -512,7 +513,7 @@ def test_register_weak_password_htmx_error_restates_requirements(
             "password": "weak",
             "confirm_password": "weak",
         },
-        headers={"HX-Request": "true"},
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 422
     text = response.text
@@ -1154,8 +1155,8 @@ def test_verify_email_creates_account_email(
     assert "/account/login" in response.headers["location"]
     from tests.conftest import get_session_data
 
-    flash = get_session_data(unauth_client).get("flash")
-    assert flash and "verified" in flash["message"]
+    flashed = get_session_data(unauth_client).get("flash")
+    assert flashed and "verified" in flashed["message"]
 
     # Verify AccountEmail was created
     account_email = session.exec(
@@ -1294,8 +1295,8 @@ def test_verify_email_unauthenticated_redirects_to_login(
     # A flash message should be pending in the session
     from tests.conftest import get_session_data
 
-    flash = get_session_data(unauth_client).get("flash")
-    assert flash and "verified" in flash["message"]
+    flashed = get_session_data(unauth_client).get("flash")
+    assert flashed and "verified" in flashed["message"]
 
     # Email should still be verified
     account_email = session.exec(
@@ -1726,27 +1727,6 @@ def test_profile_hides_add_form_at_limit(
     assert response.status_code == 200
     # The add form should not be present
     assert "Add Email" not in response.text
-
-
-def test_add_email_htmx_triggers_form_reset(
-    auth_client: TestClient,
-    test_account: Account,
-    test_account_email,
-    session: Session,
-    mock_resend_send,
-):
-    """HTMX add-email response should include HX-Trigger to reset the form."""
-    from tests.conftest import htmx_headers
-
-    response = auth_client.post(
-        app.url_path_for("add_email"),
-        data={"new_email": "reset-test@example.com"},
-        headers=htmx_headers(),
-    )
-    assert response.status_code == 200
-    trigger = response.headers.get("HX-Trigger")
-    assert trigger is not None, "Missing HX-Trigger response header"
-    assert "addEmailFormReset" in trigger
 
 
 def test_profile_emails_ordered_primary_first(

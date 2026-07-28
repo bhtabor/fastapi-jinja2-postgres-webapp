@@ -446,9 +446,11 @@ def test_profile_organization_list_items_stack_on_mobile(
 
 @pytest.mark.usefixtures("env_vars")
 def test_profile_form_actions_stack_on_mobile(browser, auth_client):
-    from tests.conftest import htmx_headers
+    from tests.conftest import turbo_frame_headers
 
-    form_html = auth_client.get("/user/edit-form", headers=htmx_headers()).text
+    form_html = auth_client.get(
+        "/user/edit-form", headers=turbo_frame_headers("profile-frame")
+    ).text
     html = _wrap_body_with_styles(f'<div id="profile-card">{form_html}</div>')
 
     layout_check = """() => {

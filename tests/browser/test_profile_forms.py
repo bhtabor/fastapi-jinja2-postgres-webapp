@@ -1,7 +1,7 @@
 """
-Playwright tests for profile page HTMX form behaviors:
+Playwright tests for profile page Turbo form behaviors:
 
-1. Edit profile form: clicking Edit fetches form via hx-get, submitting swaps back to display
+1. Edit profile form: clicking Edit fetches form via the turbo frame, submitting swaps back to display
 2. Add email form: after submit, the email input is cleared
 """
 
@@ -38,28 +38,28 @@ def profile_page(browser, live_server: str, _register_profile_user):
     page.context.close()
 
 
-# Generous bound for htmx round trips under CI load; the assertions below
+# Generous bound for turbo round trips under CI load; the assertions below
 # still fail fast on a genuinely broken swap since they poll, not sleep.
-HTMX_SWAP_TIMEOUT_MS = 10_000
+TURBO_SWAP_TIMEOUT_MS = 10_000
 
 
 def test_edit_profile_swap_cycle(profile_page: Page):
-    """Clicking Edit fetches the form via hx-get; submitting swaps back to display."""
+    """Clicking Edit fetches the form via the turbo frame; submitting swaps back to display."""
     page = profile_page
     card = page.locator("#profile-card")
 
     # Initially shows display mode with Edit button, no form
-    expect(card.locator("button:has-text('Edit')")).to_be_visible()
+    expect(card.locator("a:has-text('Edit')")).to_be_visible()
     expect(card.locator("form")).to_have_count(0)
 
-    # Click Edit — fetches form partial via hx-get. Wait for the response
+    # Click Edit — fetches form partial via the turbo frame. Wait for the response
     # itself (not just the eventual DOM state) so a slow server round trip
     # produces a clear network-timeout failure rather than a flaky locator
     # mismatch.
     with page.expect_response("**/user/edit-form"):
-        card.locator("button:has-text('Edit')").click()
+        card.locator("a:has-text('Edit')").click()
     expect(card.locator('button:has-text("Save Changes")')).to_be_visible(
-        timeout=HTMX_SWAP_TIMEOUT_MS
+        timeout=TURBO_SWAP_TIMEOUT_MS
     )
 
     # Submit the form
@@ -67,11 +67,11 @@ def test_edit_profile_swap_cycle(profile_page: Page):
         card.locator('button[type="submit"]').click()
 
     # Should swap back to display mode
-    expect(card.locator("button:has-text('Edit')")).to_be_visible(
-        timeout=HTMX_SWAP_TIMEOUT_MS
+    expect(card.locator("a:has-text('Edit')")).to_be_visible(
+        timeout=TURBO_SWAP_TIMEOUT_MS
     )
     expect(card.locator('button[type="submit"]')).to_have_count(
-        0, timeout=HTMX_SWAP_TIMEOUT_MS
+        0, timeout=TURBO_SWAP_TIMEOUT_MS
     )
 
 
@@ -82,27 +82,27 @@ def test_edit_profile_cancel(profile_page: Page):
 
     # Click Edit
     with page.expect_response("**/user/edit-form"):
-        card.locator("button:has-text('Edit')").click()
+        card.locator("a:has-text('Edit')").click()
     expect(card.locator('button:has-text("Save Changes")')).to_be_visible(
-        timeout=HTMX_SWAP_TIMEOUT_MS
+        timeout=TURBO_SWAP_TIMEOUT_MS
     )
 
     # Click Cancel
     with page.expect_response("**/user/profile-display"):
-        card.locator("button:has-text('Cancel')").click()
+        card.locator("a:has-text('Cancel')").click()
 
     # Should swap back to display mode
-    expect(card.locator("button:has-text('Edit')")).to_be_visible(
-        timeout=HTMX_SWAP_TIMEOUT_MS
+    expect(card.locator("a:has-text('Edit')")).to_be_visible(
+        timeout=TURBO_SWAP_TIMEOUT_MS
     )
     expect(card.locator('button[type="submit"]')).to_have_count(
-        0, timeout=HTMX_SWAP_TIMEOUT_MS
+        0, timeout=TURBO_SWAP_TIMEOUT_MS
     )
 
 
 def test_add_email_form_resets_after_submit(profile_page: Page):
-    """After submitting the add-email form via HTMX, the email input should
-    be cleared."""
+    """After submitting the add-email form, the turbo-stream replace of the
+    card body renders a fresh (empty) form."""
     page = profile_page
 
     email_input = page.locator('input[name="new_email"]')
@@ -115,5 +115,5 @@ def test_add_email_form_resets_after_submit(profile_page: Page):
     with page.expect_response("**/account/emails/add"):
         page.click('form:has(input[name="new_email"]) button[type="submit"]')
 
-    # hx-on::after-settle resets the form after the swap completes
-    expect(email_input).to_have_value("", timeout=HTMX_SWAP_TIMEOUT_MS)
+    # The replace stream renders a fresh form, so the input is empty
+    expect(email_input).to_have_value("", timeout=TURBO_SWAP_TIMEOUT_MS)

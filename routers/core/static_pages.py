@@ -1,11 +1,16 @@
 from typing import Optional
 from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.templating import Jinja2Templates
+from fastapi_turbo import turbo_script
 from utils.core.dependencies import get_optional_user
 from utils.core.models import User
 
 router = APIRouter(tags=["static_pages"])
+# base.html calls turbo_script(); this router never needs stream/fragment
+# helpers, so it stays on plain Jinja2Templates and just registers the
+# turbo_script global TurboTemplates would.
 templates = Jinja2Templates(directory="templates")
+templates.env.globals["turbo_script"] = turbo_script
 
 # Define valid static pages to prevent arbitrary template access
 VALID_PAGES = {

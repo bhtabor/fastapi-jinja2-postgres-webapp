@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
+from fastapi_turbo import turbo_script
 from sqlmodel import Session, select
 from sqlalchemy.orm import selectinload
 from utils.core.db import create_default_roles
@@ -14,6 +15,7 @@ from utils.core.dependencies import (
 from utils.core.models import Organization, User, Role, Account, utc_now, Invitation
 from utils.core.enums import ValidPermissions
 from utils.app.enums import AppPermissions
+from utils.core.flash import set_flash
 from exceptions.http_exceptions import (
     OrganizationNotFoundError,
     OrganizationNameTakenError,
@@ -24,13 +26,15 @@ from exceptions.http_exceptions import (
     DataIntegrityError,
 )
 from pydantic import EmailStr
-from utils.core.flash import set_flash
-from utils.core.htmx import is_htmx_request
 
 logger = getLogger("uvicorn.error")
 
 router = APIRouter(prefix="/organizations", tags=["organizations"])
+# base.html calls turbo_script(); this router never needs stream/fragment
+# helpers, so it stays on plain Jinja2Templates and just registers the
+# turbo_script global TurboTemplates would.
 templates = Jinja2Templates(directory="templates")
+templates.env.globals["turbo_script"] = turbo_script
 
 
 # --- Routes ---
@@ -211,13 +215,6 @@ def update_organization(
     session.add(organization)
     session.commit()
 
-    if is_htmx_request(request):
-        response = Response(status_code=200)
-        response.headers["HX-Redirect"] = str(
-            router.url_path_for("read_organization", org_id=org_id)
-        )
-        set_flash(request, "Organization updated successfully.")
-        return response
     response = RedirectResponse(
         url=router.url_path_for("read_organization", org_id=org_id), status_code=303
     )
@@ -253,11 +250,6 @@ def delete_organization(
     session.delete(organization)
     session.commit()
 
-    if is_htmx_request(request):
-        response = Response(status_code=200)
-        response.headers["HX-Redirect"] = "/user/profile"
-        set_flash(request, "Organization deleted successfully.")
-        return response
     response = RedirectResponse(url="/user/profile", status_code=303)
     set_flash(request, "Organization deleted successfully.")
     return response

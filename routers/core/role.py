@@ -4,7 +4,8 @@ from typing import Annotated, List, Sequence, Optional
 from logging import getLogger
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse
-from fastapi.templating import Jinja2Templates
+from fastapi_turbo import TurboStreamResponse, accepts_turbo_stream, streams
+from fastapi_turbo.templates import TurboTemplates
 from sqlmodel import Session, select, col
 from sqlalchemy.orm import selectinload
 from sqlalchemy.exc import IntegrityError
@@ -16,7 +17,7 @@ from utils.core.models import (
     User,
     DataIntegrityError,
 )
-from utils.core.organizations import load_org_for_roles_partial
+from utils.core.organizations import roles_card_streams
 from utils.core.enums import ValidPermissions
 from utils.app.enums import AppPermissions
 from exceptions.http_exceptions import (
@@ -28,12 +29,36 @@ from exceptions.http_exceptions import (
     CannotModifyDefaultRoleError,
 )
 from routers.core.organization import router as organization_router
-from utils.core.htmx import is_htmx_request, append_toast
+from utils.core.toast import toast_stream
 
 logger = getLogger("uvicorn.error")
 
 router = APIRouter(prefix="/roles", tags=["roles"])
-templates = Jinja2Templates(directory="templates")
+templates = TurboTemplates(directory="templates")
+
+
+def _roles_stream_response(
+    request: Request,
+    session: Session,
+    organization_id: int,
+    user: User,
+    toast_message: str,
+    dismiss_modals: bool = False,
+) -> TurboStreamResponse:
+    """Refresh the Roles card (table + modals), optionally close open modals,
+    and append a toast."""
+    stream = roles_card_streams(
+        templates,
+        request,
+        session,
+        organization_id,
+        user,
+        list(ValidPermissions) + list(AppPermissions),
+    )
+    if dismiss_modals:
+        stream += streams.stream("dismiss_modals")
+    stream += toast_stream(templates, request, toast_message)
+    return TurboStreamResponse(stream)
 
 
 # --- Routes ---
@@ -93,23 +118,15 @@ def create_role(
         session.rollback()
         raise RoleAlreadyExistsError()
 
-    if is_htmx_request(request):
-        organization, user_permissions = load_org_for_roles_partial(
-            session, organization_id, user
-        )
-        response = templates.TemplateResponse(
+    if accepts_turbo_stream(request):
+        return _roles_stream_response(
             request,
-            "organization/partials/roles_table.html",
-            {
-                "organization": organization,
-                "user": user,
-                "user_permissions": user_permissions,
-                "ValidPermissions": ValidPermissions,
-                "all_permissions": list(ValidPermissions) + list(AppPermissions),
-            },
+            session,
+            organization_id,
+            user,
+            "Role created successfully.",
+            dismiss_modals=True,
         )
-        response.headers["HX-Trigger"] = "modalDismiss"
-        return append_toast(response, request, templates, "Role created successfully.")
     return RedirectResponse(
         url=organization_router.url_path_for(
             "read_organization", org_id=organization_id
@@ -200,23 +217,15 @@ def update_role(
 
     session.refresh(db_role)
 
-    if is_htmx_request(request):
-        organization, user_permissions = load_org_for_roles_partial(
-            session, organization_id, user
-        )
-        response = templates.TemplateResponse(
+    if accepts_turbo_stream(request):
+        return _roles_stream_response(
             request,
-            "organization/partials/roles_table.html",
-            {
-                "organization": organization,
-                "user": user,
-                "user_permissions": user_permissions,
-                "ValidPermissions": ValidPermissions,
-                "all_permissions": list(ValidPermissions) + list(AppPermissions),
-            },
+            session,
+            organization_id,
+            user,
+            "Role updated successfully.",
+            dismiss_modals=True,
         )
-        response.headers["HX-Trigger"] = "modalDismiss"
-        return append_toast(response, request, templates, "Role updated successfully.")
     return RedirectResponse(
         url=organization_router.url_path_for(
             "read_organization", org_id=organization_id
@@ -261,22 +270,14 @@ def delete_role(
     session.delete(db_role)
     session.commit()
 
-    if is_htmx_request(request):
-        organization, user_permissions = load_org_for_roles_partial(
-            session, organization_id, user
-        )
-        response = templates.TemplateResponse(
+    if accepts_turbo_stream(request):
+        return _roles_stream_response(
             request,
-            "organization/partials/roles_table.html",
-            {
-                "organization": organization,
-                "user": user,
-                "user_permissions": user_permissions,
-                "ValidPermissions": ValidPermissions,
-                "all_permissions": list(ValidPermissions) + list(AppPermissions),
-            },
+            session,
+            organization_id,
+            user,
+            "Role deleted successfully.",
         )
-        return append_toast(response, request, templates, "Role deleted successfully.")
     return RedirectResponse(
         url=organization_router.url_path_for(
             "read_organization", org_id=organization_id

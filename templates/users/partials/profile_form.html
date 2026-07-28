@@ -1,14 +1,12 @@
-
-{# Partial: profile edit form card. Swapped into #profile-card. #}
+{# Partial: profile edit form card, wrapped in the profile-frame turbo frame.
+   Returned for turbo-frame navigations from the Edit link. Saving returns a
+   Turbo Stream (frame replace + navbar avatar refresh + toast). #}
+<turbo-frame id="profile-frame">
 <div class="card-header">
     Edit Profile
 </div>
 <div class="card-body">
-    <form action="{{ url_for('update_profile') }}" method="post" enctype="multipart/form-data"
-          hx-post="{{ url_for('update_profile') }}"
-          hx-target="#profile-card"
-          hx-swap="innerHTML"
-          hx-encoding="multipart/form-data">
+    <form action="{{ url_for('update_profile') }}" method="post" enctype="multipart/form-data">
           {% include 'base/partials/csrf_field.html' %}
         <div class="mb-3">
             <label for="name" class="form-label">Name</label>
@@ -33,10 +31,7 @@
         </div>
         <div class="profile-form-actions">
         <button type="submit" class="btn btn-primary">Save Changes</button>
-        <button type="button" class="btn btn-secondary profile-form-cancel-btn"
-                hx-get="{{ url_for('profile_display') }}"
-                hx-target="#profile-card"
-                hx-swap="innerHTML">Cancel</button>
+        <a href="{{ url_for('profile_display') }}" class="btn btn-secondary profile-form-cancel-btn">Cancel</a>
     </div>
     </form>
 </div>
@@ -47,14 +42,13 @@
         wrapper.className = 'toast align-items-center text-bg-' + level + ' border-0 show';
         wrapper.setAttribute('role', 'alert');
         wrapper.setAttribute('aria-atomic', 'true');
-        wrapper.setAttribute('remove-me', '5s');
+        wrapper.setAttribute('data-auto-dismiss', '5s');
         wrapper.innerHTML =
             '<div class="d-flex">' +
                 '<div class="toast-body">' + message + '</div>' +
                 '<button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>' +
             '</div>';
         container.appendChild(wrapper);
-        htmx.process(wrapper);
     }
 
     document.getElementById('avatar_file').addEventListener('change', function(e) {
@@ -97,3 +91,4 @@
         };
     });
 </script>
+</turbo-frame>

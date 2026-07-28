@@ -2,9 +2,9 @@
 Playwright regression tests for toast display behavior.
 
 Covers three toast delivery paths:
-1. HTMX success toast — OOB swap appended to a successful HTMX response
-2. HTMX error toast — toast delivered via error response (e.g. bad credentials)
-3. Flash cookie toast — cookie set on redirect, displayed on next page load
+1. Turbo success toast — stream appended by a successful form submission
+2. Turbo error toast — toast stream delivered via error response (e.g. bad credentials)
+3. Flash toast — session flash set on redirect, displayed on next page load
 
 Also verifies auto-dismiss (~5 s) and manual close via the X button.
 """
@@ -52,18 +52,18 @@ def anon_page(browser, live_server: str, _register_toast_user):
     context.close()
 
 
-# --- 1. HTMX success toast (OOB swap) ---
+# --- 1. Turbo success toast (stream append) ---
 
 
-def test_htmx_success_toast_appears(logged_in_page: Page, live_server: str):
-    """Updating profile name via HTMX produces a success toast."""
+def test_turbo_success_toast_appears(logged_in_page: Page, live_server: str):
+    """Updating profile name via Turbo produces a success toast."""
     page = logged_in_page
     page.goto(f"{live_server}/user/profile")
     page.wait_for_load_state("networkidle")
 
     card = page.locator("#profile-card")
     # Enter edit mode
-    card.locator("button:has-text('Edit')").click()
+    card.locator("a:has-text('Edit')").click()
     expect(card.locator('button:has-text("Save Changes")')).to_be_visible(timeout=5_000)
 
     # Submit the form (name unchanged is fine)
@@ -81,7 +81,7 @@ def _submit_avatar(page: Page, live_server: str, tmp_path):
     page.wait_for_load_state("networkidle")
 
     card = page.locator("#profile-card")
-    card.locator("button:has-text('Edit')").click()
+    card.locator("a:has-text('Edit')").click()
     expect(card.locator('button:has-text("Save Changes")')).to_be_visible(timeout=5_000)
 
     # Create a valid 200x200 PNG image
@@ -104,7 +104,7 @@ def test_avatar_update_toast_appears(logged_in_page: Page, live_server: str, tmp
 
 
 def test_avatar_update_no_full_reload(logged_in_page: Page, live_server: str, tmp_path):
-    """Avatar update should use OOB swaps, not a full page reload."""
+    """Avatar update should use stream replaces, not a full page reload."""
     page = logged_in_page
     page.goto(f"{live_server}/user/profile")
     page.wait_for_load_state("networkidle")
@@ -113,7 +113,7 @@ def test_avatar_update_no_full_reload(logged_in_page: Page, live_server: str, tm
     page.evaluate("() => { window.__noReload = true; }")
 
     card = page.locator("#profile-card")
-    card.locator("button:has-text('Edit')").click()
+    card.locator("a:has-text('Edit')").click()
     expect(card.locator('button:has-text("Save Changes")')).to_be_visible(timeout=5_000)
 
     img = Image.new("RGB", (200, 200), color="red")
@@ -123,22 +123,22 @@ def test_avatar_update_no_full_reload(logged_in_page: Page, live_server: str, tm
     card.locator('button[type="submit"]').click()
 
     # Wait for profile display to swap back in
-    expect(card.locator("button:has-text('Edit')")).to_be_visible(timeout=10_000)
+    expect(card.locator("a:has-text('Edit')")).to_be_visible(timeout=10_000)
 
-    # The navbar avatar should also have updated (OOB swap)
+    # The navbar avatar should also have updated (stream replace)
     navbar_avatar = page.locator("#navbar-avatar img")
     expect(navbar_avatar).to_be_visible(timeout=5_000)
 
     # DOM marker should survive — proves no full page reload happened
     marker = page.evaluate("() => window.__noReload")
-    assert marker is True, "Page was fully reloaded instead of using OOB swaps"
+    assert marker is True, "Page was fully reloaded instead of using stream replaces"
 
 
-# --- 2. HTMX error toast (error response path) ---
+# --- 2. Turbo error toast (error response path) ---
 
 
-def test_htmx_error_toast_appears(anon_page: Page):
-    """Submitting bad credentials via HTMX shows a danger toast."""
+def test_turbo_error_toast_appears(anon_page: Page):
+    """Submitting bad credentials via Turbo shows a danger toast."""
     page = anon_page
 
     page.fill("#email", "toast-tests@example.com")
@@ -199,7 +199,7 @@ def test_toast_close_button(logged_in_page: Page, live_server: str):
     page.wait_for_load_state("networkidle")
 
     card = page.locator("#profile-card")
-    card.locator("button:has-text('Edit')").click()
+    card.locator("a:has-text('Edit')").click()
     expect(card.locator('button:has-text("Save Changes")')).to_be_visible(timeout=5_000)
     card.locator('button[type="submit"]').click()
 
