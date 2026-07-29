@@ -1,5 +1,6 @@
 import os
 import logging
+from functools import lru_cache
 from itertools import chain
 from typing import Union, Sequence
 from sqlalchemy.engine import Engine, URL
@@ -28,7 +29,13 @@ default_roles = ["Owner", "Administrator", "Member"]
 # --- Database connection functions ---
 
 
-_engine_cache: dict[str, Engine] = {}
+@lru_cache
+def _cached_engine(url: URL) -> Engine:
+    # URL objects hash/compare on their real fields (including password), so
+    # caching on the URL itself is safe. str(URL) masks the password as
+    # "***" for safe logging — passing that to create_engine() instead would
+    # make every connection attempt authenticate with the literal "***".
+    return create_engine(url)
 
 
 def get_engine() -> Engine:
@@ -41,13 +48,7 @@ def get_engine() -> Engine:
     the same process (e.g. browser vs. browser-csrf DBs) still get one
     engine per database instead of sharing a mismatched pool.
     """
-    url = get_connection_url()
-    key = str(url)
-    engine = _engine_cache.get(key)
-    if engine is None:
-        engine = create_engine(url)
-        _engine_cache[key] = engine
-    return engine
+    return _cached_engine(get_connection_url())
 
 
 def ensure_database_exists(url: URL) -> None:
