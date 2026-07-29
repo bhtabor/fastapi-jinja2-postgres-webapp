@@ -1,6 +1,5 @@
 import os
 import logging
-from functools import lru_cache
 from itertools import chain
 from typing import Union, Sequence
 from sqlalchemy.engine import Engine, URL
@@ -29,26 +28,36 @@ default_roles = ["Owner", "Administrator", "Member"]
 # --- Database connection functions ---
 
 
-@lru_cache
-def _cached_engine(url: URL) -> Engine:
-    # URL objects hash/compare on their real fields (including password), so
-    # caching on the URL itself is safe. str(URL) masks the password as
-    # "***" for safe logging — passing that to create_engine() instead would
-    # make every connection attempt authenticate with the literal "***".
-    return create_engine(url)
+# Cache by URL object (not str(url)): str(URL) masks passwords as "***", so
+# different credentials would collide on one cache key.
+_engines: dict[URL, Engine] = {}
 
 
 def get_engine() -> Engine:
-    """Returns a process-wide cached engine for the current connection URL.
+    """Return a process-wide cached engine for the current connection URL.
 
-    Calling create_engine() per request/call leaks pooled connections until
-    Python's GC reclaims them (engines aren't freed by simple refcounting),
-    which can exhaust Postgres's max_connections under sustained load. Cache
-    by URL rather than as a single global so tests that swap DB_NAME within
-    the same process (e.g. browser vs. browser-csrf DBs) still get one
-    engine per database instead of sharing a mismatched pool.
+    Calling create_engine() per request leaks pooled connections until GC
+    reclaims them. Cache one engine per URL so tests that swap DB_NAME still
+    get a separate pool per database.
     """
-    return _cached_engine(get_connection_url())
+    url = get_connection_url()
+    engine = _engines.get(url)
+    if engine is None:
+        engine = create_engine(
+            url,
+            pool_pre_ping=True,
+            pool_size=int(os.getenv("DB_POOL_SIZE", "5")),
+            max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "5")),
+        )
+        _engines[url] = engine
+    return engine
+
+
+def clear_engine_cache() -> None:
+    """Dispose and drop all cached engines (shutdown / tests)."""
+    for engine in _engines.values():
+        engine.dispose()
+    _engines.clear()
 
 
 def ensure_database_exists(url: URL) -> None:
@@ -314,3 +323,4 @@ def tear_down_db() -> None:
             conn.commit()
     finally:
         engine.dispose()
+    clear_engine_cache()

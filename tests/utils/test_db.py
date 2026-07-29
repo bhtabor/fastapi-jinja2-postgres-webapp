@@ -3,6 +3,8 @@ from sqlmodel import Session, select, inspect
 from sqlalchemy import Engine
 from utils.core.db import (
     get_connection_url,
+    get_engine,
+    clear_engine_cache,
     assign_permissions_to_role,
     create_default_roles,
     create_permissions,
@@ -144,6 +146,83 @@ def test_get_connection_url_missing_pool_vars(monkeypatch):
 
     with pytest.raises(ValueError, match="Missing environment variables.*DB_POOL_PORT"):
         get_connection_url()
+
+
+# --- Engine cache ---
+
+
+def _direct_db_env(monkeypatch, *, name: str = "testdb", password: str = "testpass"):
+    for var in (
+        "USE_POOL",
+        "DB_HOST",
+        "DB_PORT",
+        "DB_NAME",
+        "DB_USER",
+        "DB_PASSWORD",
+        "DB_POOL_PORT",
+        "DB_POOL_NAME",
+        "DB_APPUSER",
+        "DB_APPUSER_PASSWORD",
+        "DB_POOL_SIZE",
+        "DB_MAX_OVERFLOW",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("DB_HOST", "localhost")
+    monkeypatch.setenv("DB_PORT", "5432")
+    monkeypatch.setenv("DB_NAME", name)
+    monkeypatch.setenv("DB_USER", "testuser")
+    monkeypatch.setenv("DB_PASSWORD", password)
+
+
+def test_get_engine_reuses_same_instance(monkeypatch):
+    clear_engine_cache()
+    _direct_db_env(monkeypatch)
+    assert get_engine() is get_engine()
+    clear_engine_cache()
+
+
+def test_get_engine_different_urls_get_different_engines(monkeypatch):
+    clear_engine_cache()
+    _direct_db_env(monkeypatch, name="db_a")
+    engine_a = get_engine()
+    _direct_db_env(monkeypatch, name="db_b")
+    engine_b = get_engine()
+    assert engine_a is not engine_b
+    clear_engine_cache()
+
+
+def test_get_engine_not_keyed_by_masked_str_password(monkeypatch):
+    """str(URL) masks passwords; cache must still separate credentials."""
+    clear_engine_cache()
+    _direct_db_env(monkeypatch, password="secretA")
+    engine_a = get_engine()
+    assert "***" in str(get_connection_url())
+    _direct_db_env(monkeypatch, password="secretB")
+    engine_b = get_engine()
+    assert engine_a is not engine_b
+    clear_engine_cache()
+
+
+def test_clear_engine_cache_disposes_and_creates_new(monkeypatch):
+    clear_engine_cache()
+    _direct_db_env(monkeypatch)
+    first = get_engine()
+    clear_engine_cache()
+    second = get_engine()
+    assert first is not second
+    clear_engine_cache()
+
+
+def test_get_engine_applies_pool_settings(monkeypatch):
+    clear_engine_cache()
+    _direct_db_env(monkeypatch)
+    monkeypatch.setenv("DB_POOL_SIZE", "3")
+    monkeypatch.setenv("DB_MAX_OVERFLOW", "2")
+    engine = get_engine()
+    assert engine.pool.size() == 3
+    assert engine.pool._max_overflow == 2
+    assert engine.pool._pre_ping is True
+    clear_engine_cache()
 
 
 # --- Permission and Role Tests ---
