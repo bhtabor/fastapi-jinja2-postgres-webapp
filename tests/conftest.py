@@ -7,6 +7,7 @@ from sqlmodel import Session, select
 from fastapi.testclient import TestClient
 from dotenv import load_dotenv
 from utils.core.db import (
+    clear_engine_cache,
     get_connection_url,
     get_engine,
     tear_down_db,
@@ -87,6 +88,7 @@ def engine(env_vars):
 
     # Clean up after tests
     tear_down_db()
+    clear_engine_cache()
 
 
 @pytest.fixture

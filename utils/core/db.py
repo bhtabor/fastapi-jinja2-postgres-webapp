@@ -1,5 +1,6 @@
 import os
 import logging
+import threading
 from itertools import chain
 from typing import Union, Sequence
 from sqlalchemy.engine import Engine, URL
@@ -29,8 +30,11 @@ default_roles = ["Owner", "Administrator", "Member"]
 
 
 # Cache by URL object (not str(url)): str(URL) masks passwords as "***", so
-# different credentials would collide on one cache key.
+# different credentials would collide on one cache key. Guarded by a lock:
+# sync dependencies run in FastAPI's threadpool, so concurrent first requests
+# would otherwise race and orphan an undisposed engine.
 _engines: dict[URL, Engine] = {}
+_engines_lock = threading.Lock()
 
 
 def get_engine() -> Engine:
@@ -38,26 +42,31 @@ def get_engine() -> Engine:
 
     Calling create_engine() per request leaks pooled connections until GC
     reclaims them. Cache one engine per URL so tests that swap DB_NAME still
-    get a separate pool per database.
+    get a separate pool per database. Pool settings (DB_POOL_SIZE,
+    DB_MAX_OVERFLOW) are read only when the engine for a URL is first
+    created; later environment changes have no effect on a cached engine.
     """
     url = get_connection_url()
-    engine = _engines.get(url)
-    if engine is None:
-        engine = create_engine(
-            url,
-            pool_pre_ping=True,
-            pool_size=int(os.getenv("DB_POOL_SIZE", "5")),
-            max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "5")),
-        )
-        _engines[url] = engine
+    with _engines_lock:
+        engine = _engines.get(url)
+        if engine is None:
+            engine = create_engine(
+                url,
+                pool_pre_ping=True,
+                pool_size=int(os.getenv("DB_POOL_SIZE", "5")),
+                max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "5")),
+            )
+            _engines[url] = engine
     return engine
 
 
 def clear_engine_cache() -> None:
     """Dispose and drop all cached engines (shutdown / tests)."""
-    for engine in _engines.values():
+    with _engines_lock:
+        engines = list(_engines.values())
+        _engines.clear()
+    for engine in engines:
         engine.dispose()
-    _engines.clear()
 
 
 def ensure_database_exists(url: URL) -> None:
@@ -323,4 +332,3 @@ def tear_down_db() -> None:
             conn.commit()
     finally:
         engine.dispose()
-    clear_engine_cache()

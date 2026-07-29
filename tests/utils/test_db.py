@@ -151,6 +151,15 @@ def test_get_connection_url_missing_pool_vars(monkeypatch):
 # --- Engine cache ---
 
 
+@pytest.fixture
+def engine_cache():
+    """Ensure engine-cache tests start clean and never leak cached engines,
+    even when an assertion fails mid-test."""
+    clear_engine_cache()
+    yield
+    clear_engine_cache()
+
+
 def _direct_db_env(monkeypatch, *, name: str = "testdb", password: str = "testpass"):
     for var in (
         "USE_POOL",
@@ -174,55 +183,47 @@ def _direct_db_env(monkeypatch, *, name: str = "testdb", password: str = "testpa
     monkeypatch.setenv("DB_PASSWORD", password)
 
 
-def test_get_engine_reuses_same_instance(monkeypatch):
-    clear_engine_cache()
+def test_get_engine_reuses_same_instance(engine_cache, monkeypatch):
     _direct_db_env(monkeypatch)
     assert get_engine() is get_engine()
-    clear_engine_cache()
 
 
-def test_get_engine_different_urls_get_different_engines(monkeypatch):
-    clear_engine_cache()
+def test_get_engine_different_urls_get_different_engines(engine_cache, monkeypatch):
     _direct_db_env(monkeypatch, name="db_a")
     engine_a = get_engine()
     _direct_db_env(monkeypatch, name="db_b")
     engine_b = get_engine()
     assert engine_a is not engine_b
-    clear_engine_cache()
 
 
-def test_get_engine_not_keyed_by_masked_str_password(monkeypatch):
+def test_get_engine_not_keyed_by_masked_str_password(engine_cache, monkeypatch):
     """str(URL) masks passwords; cache must still separate credentials."""
-    clear_engine_cache()
     _direct_db_env(monkeypatch, password="secretA")
     engine_a = get_engine()
     assert "***" in str(get_connection_url())
     _direct_db_env(monkeypatch, password="secretB")
     engine_b = get_engine()
     assert engine_a is not engine_b
-    clear_engine_cache()
 
 
-def test_clear_engine_cache_disposes_and_creates_new(monkeypatch):
-    clear_engine_cache()
+def test_clear_engine_cache_disposes_and_creates_new(engine_cache, monkeypatch):
     _direct_db_env(monkeypatch)
     first = get_engine()
     clear_engine_cache()
     second = get_engine()
     assert first is not second
-    clear_engine_cache()
 
 
-def test_get_engine_applies_pool_settings(monkeypatch):
-    clear_engine_cache()
+def test_get_engine_applies_pool_settings(engine_cache, monkeypatch):
     _direct_db_env(monkeypatch)
     monkeypatch.setenv("DB_POOL_SIZE", "3")
     monkeypatch.setenv("DB_MAX_OVERFLOW", "2")
     engine = get_engine()
     assert engine.pool.size() == 3
+    # No public accessors for these; private attrs are stable in practice but
+    # may need updating on a SQLAlchemy major upgrade.
     assert engine.pool._max_overflow == 2
     assert engine.pool._pre_ping is True
-    clear_engine_cache()
 
 
 # --- Permission and Role Tests ---
