@@ -1,5 +1,9 @@
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 from datetime import datetime, timedelta, UTC
+from starlette.concurrency import run_in_threadpool
+from starlette.requests import Request
 from utils.core.models import (
     Account,
     AccountRecoveryToken,
@@ -14,6 +18,8 @@ from utils.core.dependencies import (
     get_authenticated_account,
     validate_token_and_get_user,
     get_user_from_tokens,
+    get_user_from_request,
+    _get_user_from_request_sync,
     get_authenticated_user,
     get_optional_user,
     get_account_from_reset_token,
@@ -684,3 +690,85 @@ def test_get_account_from_recovery_token_invalid() -> None:
     account, token = get_account_from_recovery_token("nonexistent", session)
     assert account is None
     assert token is None
+
+
+def _request_with_auth_cookies(
+    access_token: str | None = "access_token",
+    refresh_token: str | None = "refresh_token",
+) -> Request:
+    cookie_parts: list[str] = []
+    if access_token is not None:
+        cookie_parts.append(f"access_token={access_token}")
+    if refresh_token is not None:
+        cookie_parts.append(f"refresh_token={refresh_token}")
+    headers: list[tuple[bytes, bytes]] = []
+    if cookie_parts:
+        headers.append((b"cookie", "; ".join(cookie_parts).encode()))
+    return Request(
+        {
+            "type": "http",
+            "headers": headers,
+            "method": "GET",
+            "path": "/error",
+            "query_string": b"",
+        }
+    )
+
+
+def _run_async(coro):  # type: ignore[no-untyped-def]
+    """Drive an async helper from sync tests.
+
+    The full suite may already have an event loop (e.g. after Playwright), so
+    asyncio.run() on the main thread can fail. Always run in a fresh thread.
+    """
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
+def test_get_user_from_request_resolves_user_via_threadpool() -> None:
+    """
+    Exception handlers await get_user_from_request directly (not via Depends).
+    Cookies are read on the event loop; sync DB work is offloaded through
+    run_in_threadpool and must return the user resolved from those tokens.
+    """
+    mock_user = User(id=1, name="Test User")
+    mock_user.avatar = None
+    mock_session = MagicMock()
+    request = _request_with_auth_cookies()
+
+    with (
+        patch(
+            "utils.core.dependencies.run_in_threadpool",
+            wraps=run_in_threadpool,
+        ) as mock_threadpool,
+        patch("utils.core.dependencies.get_engine", return_value=MagicMock()),
+        patch("utils.core.dependencies.Session") as mock_session_cls,
+        patch("utils.core.dependencies.get_user_from_tokens") as mock_get_user,
+    ):
+        mock_session_cls.return_value.__enter__.return_value = mock_session
+        mock_session_cls.return_value.__exit__.return_value = None
+        mock_get_user.return_value = (mock_user, None, None)
+
+        user = _run_async(get_user_from_request(request))
+
+        assert user is mock_user
+        mock_threadpool.assert_called_once_with(
+            _get_user_from_request_sync, "access_token", "refresh_token"
+        )
+        mock_get_user.assert_called_once_with(
+            ("access_token", "refresh_token"), mock_session
+        )
+
+    # No auth cookies → no user (still via the same async/threadpool path)
+    bare_request = _request_with_auth_cookies(access_token=None, refresh_token=None)
+    with (
+        patch("utils.core.dependencies.get_engine", return_value=MagicMock()),
+        patch("utils.core.dependencies.Session") as mock_session_cls,
+        patch("utils.core.dependencies.get_user_from_tokens") as mock_get_user,
+    ):
+        mock_session_cls.return_value.__enter__.return_value = mock_session
+        mock_session_cls.return_value.__exit__.return_value = None
+        mock_get_user.return_value = (None, None, None)
+
+        assert _run_async(get_user_from_request(bare_request)) is None
+        mock_get_user.assert_called_once_with((None, None), mock_session)
