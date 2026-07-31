@@ -131,26 +131,33 @@ async def update_profile(
     session: Session = Depends(get_session),
 ):
     avatar_changed = bool(avatar_file and avatar_file.filename)
-    avatar_data: Optional[bytes] = None
-    avatar_content_type: Optional[str] = None
 
-    # Async chunked read must stay on the event loop; sync image/DB work is offloaded.
+    # Async upload read stays on the event loop. CPU-bound image work is
+    # offloaded; Session/ORM mutations stay here (do not pass Session into the
+    # thread pool — see issue #237).
     if avatar_changed:
         assert avatar_file is not None
         reject_oversized_content_length(
             request.headers.get("content-length"), MAX_AVATAR_UPLOAD_BYTES
         )
         avatar_data = await read_upload_with_size_limit(avatar_file, MAX_FILE_SIZE)
-        avatar_content_type = avatar_file.content_type
+        processed_image, content_type = await run_in_threadpool(
+            validate_and_process_image, avatar_data, avatar_file.content_type
+        )
+        if user.avatar:
+            user.avatar.avatar_data = processed_image
+            user.avatar.avatar_content_type = content_type
+        else:
+            assert user.id is not None
+            user.avatar = UserAvatar(
+                user_id=user.id,
+                avatar_data=processed_image,
+                avatar_content_type=content_type,
+            )
 
-    await run_in_threadpool(
-        _apply_profile_update,
-        session,
-        user,
-        name,
-        avatar_data,
-        avatar_content_type,
-    )
+    user.name = name
+    session.commit()
+    session.refresh(user)
 
     if is_htmx_request(request):
         response = templates.TemplateResponse(
@@ -174,34 +181,6 @@ async def update_profile(
             response, request, templates, "Profile updated successfully."
         )
     return RedirectResponse(url=router.url_path_for("read_profile"), status_code=303)
-
-
-def _apply_profile_update(
-    session: Session,
-    user: User,
-    name: Optional[str],
-    avatar_data: Optional[bytes],
-    avatar_content_type: Optional[str],
-) -> None:
-    """Sync image processing and DB persistence for update_profile."""
-    if avatar_data is not None:
-        processed_image, content_type = validate_and_process_image(
-            avatar_data, avatar_content_type
-        )
-        if user.avatar:
-            user.avatar.avatar_data = processed_image
-            user.avatar.avatar_content_type = content_type
-        else:
-            assert user.id is not None
-            user.avatar = UserAvatar(
-                user_id=user.id,
-                avatar_data=processed_image,
-                avatar_content_type=content_type,
-            )
-
-    user.name = name
-    session.commit()
-    session.refresh(user)
 
 
 @router.post("/communication-preferences", response_class=RedirectResponse)
