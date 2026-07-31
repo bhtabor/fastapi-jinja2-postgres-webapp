@@ -2,6 +2,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 from datetime import datetime, timedelta, UTC
+from typing import Any, Coroutine, TypeVar
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from utils.core.models import (
@@ -715,14 +716,21 @@ def _request_with_auth_cookies(
     )
 
 
-def _run_async(coro):  # type: ignore[no-untyped-def]
+T = TypeVar("T")
+
+
+def _run_async(coro: Coroutine[Any, Any, T]) -> T:
     """Drive an async helper from sync tests.
 
     The full suite may already have an event loop (e.g. after Playwright), so
     asyncio.run() on the main thread can fail. Always run in a fresh thread.
     """
+
+    def _runner() -> T:
+        return asyncio.run(coro)
+
     with ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, coro).result()
+        return pool.submit(_runner).result()
 
 
 def test_get_user_from_request_resolves_user_via_threadpool() -> None:
