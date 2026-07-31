@@ -133,8 +133,8 @@ async def update_profile(
     avatar_changed = bool(avatar_file and avatar_file.filename)
 
     # Async upload read stays on the event loop. CPU-bound image work is
-    # offloaded; Session/ORM mutations stay here (do not pass Session into the
-    # thread pool — see issue #237).
+    # offloaded; Session/ORM mutations stay here so the Session is not passed
+    # into the thread pool.
     if avatar_changed:
         assert avatar_file is not None
         reject_oversized_content_length(
