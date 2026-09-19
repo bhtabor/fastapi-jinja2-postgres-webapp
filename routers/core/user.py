@@ -2,7 +2,14 @@ import os
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import RedirectResponse, Response
-from fastapi.templating import Jinja2Templates
+from fastapi_turbo import (
+    TurboContext,
+    TurboStreamResponse,
+    accepts_turbo_stream,
+    streams,
+    turbo_context,
+)
+from fastapi_turbo.templates import TurboTemplates
 from sqlalchemy.orm import selectinload
 from sqlmodel import Session, col, select
 from starlette.concurrency import run_in_threadpool
@@ -25,7 +32,7 @@ from utils.core.dependencies import (
     get_user_with_relations,
 )
 from utils.core.enums import ValidPermissions
-from utils.core.htmx import append_toast, is_htmx_request, toast_response
+from utils.core.flash import set_flash
 from utils.core.images import (
     ALLOWED_CONTENT_TYPES,
     MAX_AVATAR_UPLOAD_BYTES,
@@ -43,10 +50,11 @@ from utils.core.models import (
     User,
     UserAvatar,
 )
-from utils.core.organizations import load_org_for_members_partial
+from utils.core.organizations import members_stream_response
+from utils.core.toast import toast_stream, toast_stream_response
 
 router = APIRouter(prefix="/user", tags=["user"])
-templates = Jinja2Templates(directory="templates")
+templates = TurboTemplates(directory="templates")
 
 
 # --- Routes ---
@@ -87,21 +95,20 @@ def read_profile(
 def edit_profile_form(
     request: Request,
     user: User = Depends(get_authenticated_user),
+    turbo: TurboContext = Depends(turbo_context),
 ):
-    if not is_htmx_request(request):
+    if not turbo.is_frame_request:
         return RedirectResponse(
             url=router.url_path_for("read_profile"), status_code=303
         )
-    return templates.TemplateResponse(
+    return templates.render_fragment(
         request,
         "users/partials/profile_form.html",
-        {
-            "user": user,
-            "max_file_size_mb": MAX_FILE_SIZE / (1024 * 1024),
-            "min_dimension": MIN_DIMENSION,
-            "max_dimension": MAX_DIMENSION,
-            "allowed_formats": list(ALLOWED_CONTENT_TYPES.keys()),
-        },
+        user=user,
+        max_file_size_mb=MAX_FILE_SIZE / (1024 * 1024),
+        min_dimension=MIN_DIMENSION,
+        max_dimension=MAX_DIMENSION,
+        allowed_formats=list(ALLOWED_CONTENT_TYPES.keys()),
     )
 
 
@@ -109,15 +116,16 @@ def edit_profile_form(
 def profile_display(
     request: Request,
     user: User = Depends(get_authenticated_user),
+    turbo: TurboContext = Depends(turbo_context),
 ):
-    if not is_htmx_request(request):
+    if not turbo.is_frame_request:
         return RedirectResponse(
             url=router.url_path_for("read_profile"), status_code=303
         )
-    return templates.TemplateResponse(
+    return templates.render_fragment(
         request,
         "users/partials/profile_display.html",
-        {"user": user},
+        user=user,
     )
 
 
@@ -133,17 +141,18 @@ async def update_profile(
 ):
     avatar_changed = bool(avatar_file and avatar_file.filename)
 
-    # Async upload read stays on the event loop. CPU-bound image work is
-    # offloaded; Session/ORM mutations stay here so the Session is not passed
-    # into the thread pool.
+    # Handle avatar update
     if avatar_changed:
         assert avatar_file is not None
         reject_oversized_content_length(
             request.headers.get("content-length"), MAX_AVATAR_UPLOAD_BYTES
         )
         avatar_data = await read_upload_with_size_limit(avatar_file, MAX_FILE_SIZE)
+        avatar_content_type = avatar_file.content_type
+
+        # Image processing is CPU-bound; offload it off the event loop.
         processed_image, content_type = await run_in_threadpool(
-            validate_and_process_image, avatar_data, avatar_file.content_type
+            validate_and_process_image, avatar_data, avatar_content_type
         )
         if user.avatar:
             user.avatar.avatar_data = processed_image
@@ -156,32 +165,35 @@ async def update_profile(
                 avatar_content_type=content_type,
             )
 
+    # Update user details
     user.name = name
+
     session.commit()
     session.refresh(user)
 
-    if is_htmx_request(request):
-        response = templates.TemplateResponse(
-            request,
-            "users/partials/profile_display.html",
-            {"user": user},
+    if accepts_turbo_stream(request):
+        # Swap the profile card back to display mode without a full reload.
+        stream = streams.replace(
+            templates.render_string(
+                request, "users/partials/profile_display.html", user=user
+            ),
+            target="profile-frame",
         )
         if avatar_changed:
-            # Avatar also appears in the navbar — append an OOB swap for it.
-            navbar_html = bytes(
-                templates.TemplateResponse(
-                    request,
-                    "base/partials/navbar_avatar_oob.html",
-                    {"user": user},
-                ).body
-            ).decode()
-            original = bytes(response.body).decode()
-            response.body = (original + navbar_html).encode()
-            response.headers["content-length"] = str(len(response.body))
-        return append_toast(
-            response, request, templates, "Profile updated successfully."
-        )
-    return RedirectResponse(url=router.url_path_for("read_profile"), status_code=303)
+            # Avatar also appears in the navbar — refresh it too.
+            stream += streams.replace(
+                templates.render_string(
+                    request, "base/partials/navbar_avatar.html", user=user
+                ),
+                target="navbar-avatar",
+            )
+        stream += toast_stream(templates, request, "Profile updated successfully.")
+        return TurboStreamResponse(stream)
+    redirect = RedirectResponse(
+        url=router.url_path_for("read_profile"), status_code=303
+    )
+    set_flash(request, "Profile updated successfully.")
+    return redirect
 
 
 @router.post("/communication-preferences", response_class=RedirectResponse)
@@ -200,13 +212,15 @@ def update_communication_preferences(
     session.commit()
     session.refresh(user)
 
-    if is_htmx_request(request):
-        return toast_response(
-            request,
+    if accepts_turbo_stream(request):
+        return toast_stream_response(
             templates,
+            request,
             "Communication preferences updated.",
         )
-    return RedirectResponse(url=router.url_path_for("read_profile"), status_code=303)
+    response = RedirectResponse(url=router.url_path_for("read_profile"), status_code=303)
+    set_flash(request, "Communication preferences updated.")
+    return response
 
 
 @router.get("/avatar")
@@ -275,25 +289,16 @@ def update_user_role(
 
     session.commit()
 
-    if is_htmx_request(request):
-        organization, user_permissions, pending_invitations = (
-            load_org_for_members_partial(session, organization_id, user)
-        )
-        response = templates.TemplateResponse(
+    if accepts_turbo_stream(request):
+        return members_stream_response(
+            templates,
             request,
-            "organization/partials/members_table.html",
-            {
-                "organization": organization,
-                "pending_invitations": pending_invitations,
-                "user": user,
-                "user_permissions": user_permissions,
-                "ValidPermissions": ValidPermissions,
-                "all_permissions": list(ValidPermissions) + list(AppPermissions),
-            },
-        )
-        response.headers["HX-Trigger"] = "modalDismiss"
-        return append_toast(
-            response, request, templates, "User role updated successfully."
+            session,
+            organization_id,
+            user,
+            "User role updated successfully.",
+            list(ValidPermissions) + list(AppPermissions),
+            dismiss_modals=True,
         )
     return RedirectResponse(
         url=organization_router.url_path_for(
@@ -349,24 +354,15 @@ def remove_user_from_organization(
 
     session.commit()
 
-    if is_htmx_request(request):
-        organization, user_permissions, pending_invitations = (
-            load_org_for_members_partial(session, organization_id, user)
-        )
-        response = templates.TemplateResponse(
+    if accepts_turbo_stream(request):
+        return members_stream_response(
+            templates,
             request,
-            "organization/partials/members_table.html",
-            {
-                "organization": organization,
-                "pending_invitations": pending_invitations,
-                "user": user,
-                "user_permissions": user_permissions,
-                "ValidPermissions": ValidPermissions,
-                "all_permissions": list(ValidPermissions) + list(AppPermissions),
-            },
-        )
-        return append_toast(
-            response, request, templates, "User removed from organization."
+            session,
+            organization_id,
+            user,
+            "User removed from organization.",
+            list(ValidPermissions) + list(AppPermissions),
         )
     return RedirectResponse(
         url=organization_router.url_path_for(

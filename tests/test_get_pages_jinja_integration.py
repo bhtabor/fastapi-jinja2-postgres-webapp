@@ -117,7 +117,6 @@ class TestJinjaCheckAndGetSmokeIntegration:
             and ctx.template_name.endswith(".html")
             and not ctx.template_name.startswith("organization/partials/")
             and not ctx.template_name.startswith("users/partials/")
-            and ctx.template_name != "base/partials/navbar_avatar_oob.html"
         }
         runtime_reads = {
             case.jinja_route for case in GET_PAGE_CASES if case.jinja_route is not None

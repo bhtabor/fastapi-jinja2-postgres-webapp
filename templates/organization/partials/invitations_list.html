@@ -16,10 +16,7 @@
         <small class="text-muted invitation-list-expiry">Expires: {{ inv.expires_at.strftime('%Y-%m-%d') }}</small>
         {% if show_invitation_cancel is defined and show_invitation_cancel and ValidPermissions is defined and user_permissions is defined and ValidPermissions.INVITE_USER in user_permissions %}
         <div class="invitation-actions-cell">
-            <form method="POST" action="{{ url_for('resend_invitation') }}" class="invitation-resend-form mb-0"
-                  hx-post="{{ url_for('resend_invitation') }}"
-                  hx-target="#members-card-content"
-                  hx-swap="innerHTML">
+            <form method="POST" action="{{ url_for('resend_invitation') }}" class="invitation-resend-form mb-0">
                   {% include 'base/partials/csrf_field.html' %}
                 <input type="hidden" name="invitation_id" value="{{ inv.id }}">
                 <input type="hidden" name="organization_id" value="{{ organization.id }}">
@@ -28,10 +25,7 @@
                 </button>
             </form>
             <form method="POST" action="{{ url_for('delete_invitation') }}" class="invitation-cancel-form mb-0"
-                  hx-post="{{ url_for('delete_invitation') }}"
-                  hx-target="#members-card-content"
-                  hx-swap="innerHTML"
-                  hx-confirm="Cancel invitation for {{ inv.invitee_email }}?">
+                  data-turbo-confirm="Cancel invitation for {{ inv.invitee_email }}?">
                   {% include 'base/partials/csrf_field.html' %}
                 <input type="hidden" name="invitation_id" value="{{ inv.id }}">
                 <input type="hidden" name="organization_id" value="{{ organization.id }}">

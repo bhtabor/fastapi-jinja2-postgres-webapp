@@ -5,7 +5,8 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, Query, Request
 from fastapi.responses import RedirectResponse, Response
-from fastapi.templating import Jinja2Templates
+from fastapi_turbo import TurboStreamResponse, accepts_turbo_stream, streams
+from fastapi_turbo.templates import TurboTemplates
 from pydantic import EmailStr
 from sqlmodel import Session, col, select
 from starlette.datastructures import URLPath
@@ -56,7 +57,6 @@ from utils.core.dependencies import (
     require_unauthenticated_unless_invitation_warning,
 )
 from utils.core.flash import set_flash
-from utils.core.htmx import is_htmx_request, toast_response
 from utils.core.invitations import (
     get_invitation_token_warning,
     process_invitation,
@@ -80,11 +80,12 @@ from utils.core.rate_limit import (
     check_register_ip_rate_limit,
     login_email_limiter,
 )
+from utils.core.toast import toast_stream
 
 logger = getLogger("uvicorn.error")
 
 router = APIRouter(prefix="/account", tags=["account"])
-templates = Jinja2Templates(directory="templates")
+templates = TurboTemplates(directory="templates")
 
 
 # --- Route-specific dependencies ---
@@ -431,12 +432,7 @@ def register(
     # session.refresh(new_user) # Let's assume process_invitation only modifies the invitation object for now
 
     # Log the new account in with a fresh session
-    # Use HX-Redirect for HTMX, 303 for regular form submissions
-    if is_htmx_request(request):
-        response = Response(status_code=200)
-        response.headers["HX-Redirect"] = str(redirect_url)
-    else:
-        response = RedirectResponse(url=str(redirect_url), status_code=303)
+    response = RedirectResponse(url=str(redirect_url), status_code=303)
     assert account.id is not None
     log_in_session(request, response, account.id, session)
     session.commit()
@@ -535,12 +531,7 @@ def login(
     assert account.id is not None
     persistent = remember == "on"
 
-    # Use HX-Redirect for HTMX, 303 for regular form submissions
-    if is_htmx_request(request):
-        response = Response(status_code=200)
-        response.headers["HX-Redirect"] = str(redirect_url)
-    else:
-        response = RedirectResponse(url=str(redirect_url), status_code=303)
+    response = RedirectResponse(url=str(redirect_url), status_code=303)
     log_in_session(request, response, account.id, session, remember=persistent)
     session.commit()
 
@@ -570,13 +561,9 @@ def forgot_password(
     # Extract the path from the full URL
     redirect_path = urlparse(referer).path
 
-    if is_htmx_request(request):
-        response = Response(status_code=200)
-        response.headers["HX-Redirect"] = f"{redirect_path}?show_form=false"
-    else:
-        response = RedirectResponse(
-            url=f"{redirect_path}?show_form=false", status_code=303
-        )
+    response = RedirectResponse(
+        url=f"{redirect_path}?show_form=false", status_code=303
+    )
     set_flash(
         request,
         "If an account exists with this email, a password reset link will be sent.",
@@ -623,11 +610,7 @@ def reset_password(
     redirect_url = str(dashboard_router.url_path_for("read_dashboard"))
     message = "Password reset successfully."
 
-    if is_htmx_request(request):
-        response = Response(status_code=200)
-        response.headers["HX-Redirect"] = redirect_url
-    else:
-        response = RedirectResponse(url=redirect_url, status_code=303)
+    response = RedirectResponse(url=redirect_url, status_code=303)
 
     log_in_session(request, response, authorized_account.id, session)
     session.commit()
@@ -726,6 +709,22 @@ def recover_account(
 # --- Multi-email management routes ---
 
 
+def _email_addresses_stream(request: Request, session: Session, account: Account):
+    """A <turbo-stream> replacing the Email Addresses card body with fresh state."""
+    account_emails = session.exec(
+        select(AccountEmail)
+        .where(AccountEmail.account_id == account.id)
+        .order_by(col(AccountEmail.is_primary).desc())
+    ).all()
+    html = templates.render_string(
+        request,
+        "users/partials/email_addresses.html",
+        account_emails=account_emails,
+        max_emails=MAX_EMAILS_PER_ACCOUNT,
+    )
+    return streams.replace(html, target="email-addresses")
+
+
 @router.post("/emails/add")
 def add_email(
     request: Request,
@@ -765,13 +764,11 @@ def add_email(
         else "A verification email was already sent. Please check your inbox."
     )
 
-    if is_htmx_request(request):
-        return toast_response(
-            request,
-            templates,
-            message,
-            level="success",
-            headers={"HX-Trigger": "addEmailFormReset"},
+    if accepts_turbo_stream(request):
+        # Replace the card body (fresh, empty add form) and append a toast.
+        return TurboStreamResponse(
+            _email_addresses_stream(request, session, account)
+            + toast_stream(templates, request, message)
         )
     profile_path: URLPath = user_router.url_path_for("read_profile")
     response = RedirectResponse(url=str(profile_path), status_code=303)
@@ -903,11 +900,7 @@ def promote_email(
     )
 
     profile_path = user_router.url_path_for("read_profile")
-    if is_htmx_request(request):
-        response = Response(status_code=200)
-        response.headers["HX-Redirect"] = str(profile_path)
-    else:
-        response = RedirectResponse(url=str(profile_path), status_code=303)
+    response = RedirectResponse(url=str(profile_path), status_code=303)
     log_in_session(request, response, account.id, session)
     session.commit()
     set_flash(request, "Primary email address updated.")
@@ -952,9 +945,11 @@ def remove_email(
     recovery_url = generate_recovery_url(recovery_token_str)
     send_email_removed_notification(removed_address, recovery_url)
 
-    if is_htmx_request(request):
-        return toast_response(
-            request, templates, "Email address removed.", level="success"
+    if accepts_turbo_stream(request):
+        # Replace the card body (removed email disappears) and append a toast.
+        return TurboStreamResponse(
+            _email_addresses_stream(request, session, account)
+            + toast_stream(templates, request, "Email address removed.")
         )
     profile_path: URLPath = user_router.url_path_for("read_profile")
     response = RedirectResponse(url=str(profile_path), status_code=303)

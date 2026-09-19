@@ -85,14 +85,14 @@ The `.cursor/rules` folder contains a set of AI rules for working on this codeba
 
 ## Application architecture
 
-### Hybrid PRG + HTMX pattern
+### Hybrid PRG + Turbo pattern
 
 In this template, we use FastAPI to define the "API endpoints" of our application. An API endpoint is simply a URL that accepts user requests and returns responses. When a user visits a page, their browser sends what's called a "GET" request to an endpoint, and the server processes it (often querying a database), and returns a response (typically HTML). The browser renders the HTML, displaying the page.
 
-We also create POST endpoints, which accept form submissions so the user can create, update, and delete data in the database. This template uses a **hybrid Post-Redirect-Get (PRG) + HTMX** approach for POST requests:
+We also create POST endpoints, which accept form submissions so the user can create, update, and delete data in the database. This template uses a **hybrid Post-Redirect-Get (PRG) + Turbo** approach for POST requests:
 
-- **Non-HTMX (PRG):** When a form is submitted without HTMX, the server processes the data and returns a `303 See Other` redirect to a GET endpoint, which re-renders the full page with updated data.
-- **HTMX:** When HTMX submits the same form, the server detects the `HX-Request: true` header and instead returns a `200` HTML partial that HTMX swaps into the relevant part of the page — no full-page reload needed.
+- **Non-Turbo (PRG):** When a form is submitted without Turbo, the server processes the data and returns a `303 See Other` redirect to a GET endpoint, which re-renders the full page with updated data.
+- **Turbo:** When Turbo submits the same form, it advertises `text/vnd.turbo-stream.html` in its `Accept` header; the server detects this with `fastapi_turbo.accepts_turbo_stream()` and returns a `200` `turbo-stream` body that Turbo applies in place — no full-page reload needed.
 
 Both paths use the same POST route URLs and form field contracts. (See [Architecture](https://promptlytechnologies.com/fastapi-jinja2-postgres-webapp/user-guide/architecture.html) for more details.)
 
@@ -113,13 +113,18 @@ Both paths use the same POST route URLs and form field contracts. (See [Architec
 - Test database configuration: `docker-compose.yml`
 - Template helper functions: `utils/core/`
     - Auth helpers: `auth.py`
+    - Communication preferences helpers: `communication_preferences.py`
+    - CSRF helpers: `csrf.py`
     - Database helpers: `db.py`
     - FastAPI dependencies: `dependencies.py`
     - Enums: `enums.py`
+    - Flash messages: `flash.py`
     - Image helpers: `images.py`
+    - Invitation helpers: `invitations.py`
     - Database models: `models.py`
-- Shared helper functions: `utils/`
-    - HTMX request detection: `htmx.py`
+    - Organization helpers: `organizations.py`
+    - Rate limiting: `rate_limit.py`
+    - Turbo-toast stream helpers: `toast.py`
 - Custom template helper functions for your app: `utils/app/`
 - Exceptions: `exceptions/`
     - HTTP exceptions: `http_exceptions.py`
@@ -185,27 +190,30 @@ This template uses middlewares exclusively for global exception handling; they o
 
 Middleware functions are decorated with `@app.exception_handler(ExceptionType)` and are executed in the order they are defined in `main.py`, from most to least specific.
 
-Here's a middleware for handling the `PasswordValidationError` exception, which returns a toast partial for HTMX requests or a full error page for non-HTMX requests:
+Here's a middleware for handling the `PasswordValidationError` exception, which returns a toast stream for Turbo requests or a full error page otherwise:
 
 ```python
-from utils.core.htmx import is_htmx_request
+from fastapi_turbo import accepts_turbo_stream
+
+from utils.core.toast import toast_stream_response
 
 @app.exception_handler(PasswordValidationError)
-async def password_validation_exception_handler(request: Request, exc: PasswordValidationError):
-    if is_htmx_request(request):
-        return templates.TemplateResponse(
+async def password_validation_exception_handler(
+    request: Request, exc: PasswordValidationError
+):
+    if accepts_turbo_stream(request):
+        return toast_stream_response(
+            templates,
             request,
-            "base/partials/toast.html",
-            {"message": exc.detail, "level": "danger"},
+            str(exc.detail),
+            level="danger",
             status_code=422,
         )
+    user = await get_user_from_request(request)
     return templates.TemplateResponse(
         request,
-        "errors/validation_error.html",
-        {
-            "status_code": 422,
-            "errors": {"error": exc.detail}
-        },
+        "errors/error.html",
+        {"status_code": 422, "detail": None, "errors": None, "user": user},
         status_code=422,
     )
 ```
@@ -355,7 +363,7 @@ The frontend ships its own small, self-contained CSS framework in `static/css/st
 - A **reboot** and base typography.
 - A small **grid** (`container`, `row`, `col-md-*`, `offset-md-*`), the **utility classes** the templates use (spacing, flex, text, display), and the **components** they rely on (buttons, cards, navbar, dropdowns, forms, list groups, tables, badges, alerts, modals, toasts).
 
-Interactive components — dropdowns, modals, the mobile navbar collapse, and toast dismissal — are powered by `static/js/ui.js`. It reads `data-bs-toggle`, `data-bs-target`, and `data-bs-dismiss` attributes and wires everything through document-level event delegation, so behavior keeps working for markup that htmx swaps in after the initial load. `ui.js` is loaded with `defer` in `<head>` (outside `<body>`) so it is never re-processed during `hx-boost` body swaps.
+Interactive components — dropdowns, modals, the mobile navbar collapse, and toast dismissal — are powered by `static/js/ui.js`. It reads `data-bs-toggle`, `data-bs-target`, and `data-bs-dismiss` attributes and wires everything through document-level event delegation, so behavior keeps working for markup that Turbo swaps in after the initial load. `ui.js` is loaded with `defer` in `<head>` (outside `<body>`) so it is never re-processed during Turbo Drive body swaps.
 
 #### Re-theming
 
@@ -393,7 +401,7 @@ Typefaces are loaded from Google Fonts in `templates/base.html`. To swap fonts, 
 
 ### Client-side form validation
 
-While this template includes comprehensive server-side validation through Pydantic models and custom validators, it's important to note that server-side validation should be treated as a fallback security measure. For HTMX requests, validation errors are surfaced as a toast notification without a page reload. For non-HTMX requests, they render the `validation_error.html` full-page error template. In either case, seeing a validation error means client-side validation has failed to catch invalid input before it reached the server.
+While this template includes comprehensive server-side validation through Pydantic models and custom validators, it's important to note that server-side validation should be treated as a fallback security measure. For Turbo requests, validation errors are surfaced as a toast stream without a page reload. For non-Turbo requests, they render `errors/error.html` as a full-page error template. In either case, seeing a validation error means client-side validation has failed to catch invalid input before it reached the server.
 
 Best practices dictate implementing thorough client-side validation via JavaScript and/or HTML `input` element `pattern` attributes to:
 

@@ -5,7 +5,8 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, Form, Query, Request, status
 from fastapi.exceptions import HTTPException
 from fastapi.responses import RedirectResponse, Response
-from fastapi.templating import Jinja2Templates
+from fastapi_turbo import accepts_turbo_stream
+from fastapi_turbo.templates import TurboTemplates
 from pydantic import EmailStr
 from sqlmodel import Session, select
 
@@ -28,18 +29,17 @@ from utils.core.dependencies import (
     get_session,
 )
 from utils.core.enums import ValidPermissions
-from utils.core.htmx import append_toast, is_htmx_request
 from utils.core.invitations import (
     process_invitation,
     require_active_invitation_by_token,
     send_invitation_email,
 )
 from utils.core.models import Account, Invitation, Organization, Role, User, utc_now
-from utils.core.organizations import load_org_for_members_partial
+from utils.core.organizations import members_stream_response
 
 logger = getLogger("uvicorn.error")
 
-templates = Jinja2Templates(directory="templates")
+templates = TurboTemplates(directory="templates")
 
 router = APIRouter(
     prefix="/invitations",
@@ -78,33 +78,6 @@ def _redirect_for_inactive_invitation(
         redirect_url = f"{login_url}?invitation_token={token}"
 
     return RedirectResponse(url=redirect_url, status_code=status.HTTP_303_SEE_OTHER)
-
-
-def _members_table_response(
-    request: Request,
-    session: Session,
-    organization_id: int,
-    current_user: User,
-    toast_message: str | None = None,
-) -> Response:
-    organization, user_permissions, pending_invitations = load_org_for_members_partial(
-        session, organization_id, current_user
-    )
-    response = templates.TemplateResponse(
-        request,
-        "organization/partials/members_table.html",
-        {
-            "organization": organization,
-            "pending_invitations": pending_invitations,
-            "user": current_user,
-            "user_permissions": user_permissions,
-            "ValidPermissions": ValidPermissions,
-            "all_permissions": list(ValidPermissions) + list(AppPermissions),
-        },
-    )
-    if toast_message:
-        response = append_toast(response, request, templates, toast_message)
-    return response
 
 
 @router.post("/", name="create_invitation")
@@ -189,16 +162,17 @@ def create_invitation(
         session.rollback()
         raise HTTPException(status_code=500, detail="An unexpected error occurred.")
 
-    if is_htmx_request(request):
-        response = _members_table_response(
+    if accepts_turbo_stream(request):
+        return members_stream_response(
+            templates,
             request,
             session,
             organization_id,
             current_user,
             "Invitation sent successfully.",
+            list(ValidPermissions) + list(AppPermissions),
+            dismiss_modals=True,
         )
-        response.headers["HX-Trigger"] = "modalDismiss"
-        return response
     return RedirectResponse(url=f"/organizations/{organization_id}", status_code=303)
 
 
@@ -262,13 +236,15 @@ def resend_invitation(
         session.rollback()
         raise HTTPException(status_code=500, detail="An unexpected error occurred.")
 
-    if is_htmx_request(request):
-        return _members_table_response(
+    if accepts_turbo_stream(request):
+        return members_stream_response(
+            templates,
             request,
             session,
             organization_id,
             current_user,
             "Invitation resent.",
+            list(ValidPermissions) + list(AppPermissions),
         )
     return RedirectResponse(url=f"/organizations/{organization_id}", status_code=303)
 
@@ -303,13 +279,15 @@ def delete_invitation(
     session.delete(invitation)
     session.commit()
 
-    if is_htmx_request(request):
-        return _members_table_response(
+    if accepts_turbo_stream(request):
+        return members_stream_response(
+            templates,
             request,
             session,
             organization_id,
             current_user,
             "Invitation cancelled successfully.",
+            list(ValidPermissions) + list(AppPermissions),
         )
     return RedirectResponse(url=f"/organizations/{organization_id}", status_code=303)
 

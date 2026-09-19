@@ -6,7 +6,7 @@ from httpx import Response
 from sqlmodel import Session
 
 from main import app
-from tests.conftest import SetupError
+from tests.conftest import SetupError, turbo_stream_headers
 from utils.core.images import InvalidImageError
 from utils.core.models import Organization, Role, User
 
@@ -345,7 +345,7 @@ def test_update_communication_preferences_master_off_clears_subs(
     assert test_user.comm_marketing is False
 
 
-def test_update_communication_preferences_htmx(
+def test_update_communication_preferences_turbo(
     auth_client: TestClient, test_user: User, session: Session
 ):
     response = auth_client.post(
@@ -354,7 +354,7 @@ def test_update_communication_preferences_htmx(
             "comm_opt_in": "on",
             "comm_updates": "on",
         },
-        headers={"HX-Request": "true"},
+        headers=turbo_stream_headers(),
     )
     assert response.status_code == 200
     assert "Communication preferences updated." in response.text

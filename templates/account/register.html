@@ -26,7 +26,6 @@
     </div>
     {% else %}
     <form method="POST" action="{{ url_for('register') }}"
-          hx-post="{{ url_for('register') }}" hx-swap="none"
           class="needs-validation" novalidate>
           {% include 'base/partials/csrf_field.html' %}
         {# Add hidden input for invitation token if present #}

@@ -6,12 +6,12 @@ guide-section: "Application"
 
 ## Data flow
 
-This application uses a **hybrid Post-Redirect-Get (PRG) + HTMX** architecture. Every mutating endpoint supports both paths simultaneously:
+This application uses a **hybrid Post-Redirect-Get (PRG) + Turbo** architecture built around [Hotwired Turbo](https://turbo.hotwired.dev/). Every mutating endpoint supports both paths simultaneously:
 
-- **Non-HTMX path (PRG):** A standard browser form submission sends a POST request. On success the server issues a `303 See Other` redirect to a GET endpoint, which re-renders the full page with updated data. On error a full-page error template is returned.
-- **HTMX path:** When the browser sends the `HX-Request: true` header (added automatically by [htmx.org](https://htmx.org)), the same POST endpoint detects the header via `utils/core/htmx.py:is_htmx_request()` and instead returns a `200` HTML partial that HTMX swaps into the relevant section of the page. On error a toast partial is returned and swapped into `#toast-container` via out-of-band (OOB) swap.
+- **Non-Turbo path (PRG):** A standard browser form submission sends a POST request. On success the server issues a `303 See Other` redirect to a GET endpoint, which re-renders the full page with updated data. On error a full-page error template is returned.
+- **Turbo path:** Turbo requests advertise `text/vnd.turbo-stream.html` in their `Accept` header. The same POST endpoint detects this via `fastapi_turbo.accepts_turbo_stream()` and instead returns a `200` `turbo-stream` body that Turbo applies in place — replacing a targeted element, appending a toast to `#toast-container`, or both. On error a toast stream is returned with the real HTTP status code.
 
-The HTMX rollout keeps the existing POST route contract intact — dedicated `PUT`/`PATCH`/`DELETE` routes may be introduced in a future iteration.
+The Turbo rollout keeps the existing POST route contract intact — dedicated `PUT`/`PATCH`/`DELETE` routes may be introduced in a future iteration.
 
 ### PRG path
 
@@ -68,7 +68,7 @@ dot.render('static/data_flow_prg', format='png', cleanup=True)
 
 ![PRG data flow diagram](static/data_flow_prg.png)
 
-### HTMX path
+### Turbo Streams path
 
 ``` {python}
 #| echo: false
@@ -79,62 +79,65 @@ dot = Digraph()
 dot.attr(rankdir='TB')
 dot.attr('node', shape='box', style='rounded')
 
-with dot.subgraph(name='cluster_client_htmx') as client:
-    client.attr(label='Client (HTMX)')
+with dot.subgraph(name='cluster_client_turbo') as client:
+    client.attr(label='Client (Turbo)')
     client.node('A2', 'User submits form', fillcolor='lightblue', style='rounded,filled')
     client.node('B2', 'HTML/JS form validation', fillcolor='lightblue', style='rounded,filled')
 
-with dot.subgraph(name='cluster_server_htmx') as server:
+with dot.subgraph(name='cluster_server_turbo') as server:
     server.attr(label='Server')
-    server.node('C2', 'FastAPI request validation\n(HX-Request: true detected)', fillcolor='lightgreen', style='rounded,filled')
+    server.node('C2', 'FastAPI request validation\n(accepts Turbo: text/vnd.turbo-stream.html)', fillcolor='lightgreen', style='rounded,filled')
     server.node('D2', 'Business logic validation', fillcolor='lightgreen', style='rounded,filled')
     server.node('E2', 'Update database', fillcolor='lightgreen', style='rounded,filled')
-    server.node('F2', 'Exception handler\n(is_htmx_request branch)', fillcolor='lightgreen', style='rounded,filled')
-    server.node('G2', 'Render toast partial\n(#toast-container OOB swap)', fillcolor='lightgreen', style='rounded,filled')
-    server.node('H2', 'Render HTML partial\n(target element swap)', fillcolor='lightgreen', style='rounded,filled')
+    server.node('F2', 'Exception handler\n(accepts_turbo_stream branch)', fillcolor='lightgreen', style='rounded,filled')
+    server.node('G2', 'Render toast stream\n(append to #toast-container)', fillcolor='lightgreen', style='rounded,filled')
+    server.node('H2', 'Render turbo-stream body\n(target element replace)', fillcolor='lightgreen', style='rounded,filled')
 
-with dot.subgraph(name='cluster_client_post_htmx') as client_post:
-    client_post.attr(label='Client (HTMX)')
-    client_post.node('J2', 'HTMX swaps partial\ninto DOM', fillcolor='lightblue', style='rounded,filled')
+with dot.subgraph(name='cluster_client_post_turbo') as client_post:
+    client_post.attr(label='Client (Turbo)')
+    client_post.node('J2', 'Turbo applies streams\nin place', fillcolor='lightblue', style='rounded,filled')
     client_post.node('K2', 'Toast displayed\n(no page reload)', fillcolor='lightyellow', style='rounded,filled')
 
 dot.edge('A2', 'B2')
 dot.edge('B2', 'A2')
-dot.edge('B2', 'C2', label='POST + HX-Request: true')
+dot.edge('B2', 'C2', label='POST + Accept: text/vnd.turbo-stream.html')
 dot.edge('C2', 'D2')
 dot.edge('C2', 'F2', label='RequestValidationError')
 dot.edge('D2', 'E2', label='Valid data')
 dot.edge('D2', 'F2', label='Custom Validation Error')
 dot.edge('E2', 'H2', label='Data updated')
-dot.edge('H2', 'J2', label='200 HTML partial')
+dot.edge('H2', 'J2', label='200 turbo-stream body')
 dot.edge('F2', 'G2')
-dot.edge('G2', 'K2', label='422/400/401 toast partial')
+dot.edge('G2', 'K2', label='toast stream (real status code)')
 
-dot.render('static/data_flow_htmx', format='png', cleanup=True)
+dot.render('static/data_flow_turbo', format='png', cleanup=True)
 ```
 
-![HTMX data flow diagram](static/data_flow_htmx.png)
+![Turbo data flow diagram](static/data_flow_turbo.png)
 
-The PRG path is preserved for all non-HTMX clients (e.g. browsers with JavaScript disabled, automated tests that do not send `HX-Request`). The HTMX path adds in-place partial updates and toast-based error handling on top of the same POST endpoints, with no change to the route URLs or form field contracts.
+The PRG path is preserved for all clients that do not request Turbo Streams (e.g. browsers with JavaScript disabled, automated tests that do not advertise `text/vnd.turbo-stream.html`). The Turbo path adds in-place partial updates and toast-stream error handling on top of the same POST endpoints, with no change to the route URLs or form field contracts.
 
 ### Form validation and error handling
 
-| Scenario | Non-HTMX (PRG) | HTMX |
+| Scenario | Non-Turbo (PRG) | Turbo |
 |---|---|---|
-| `RequestValidationError` (missing/invalid field) | Full-page error template, `422` | Toast partial via `#toast-container` OOB swap, `422` |
-| Business logic error (`HTTPException`) | Full-page error template | Toast partial, `400`/`401`/`403`/`404` |
-| Login failure (`CredentialsError`) | Full-page error template, `401` | Toast partial, `401` |
-| Success | `303` redirect → GET → full page | `200` HTML partial swapped into target element |
+| `RequestValidationError` (missing/invalid field) | Full-page error template, `422` | Toast stream, `422` |
+| Business logic error (`HTTPException`) | Full-page error template | Toast stream, `400`/`401`/`403`/`404` |
+| Login failure (`CredentialsError`) | Full-page error template, `401` | Toast stream, `401` |
+| Success | `303` redirect → GET → full page | `200` turbo-stream body, applied in place |
 
-Toast partials are rendered from `templates/base/partials/toast.html` and injected into the persistent `#toast-container` div in `base.html` using `hx-swap-oob="true"`. The toast is styled by the custom stylesheet (`static/css/styles.css`); it auto-dismisses via the htmx `remove-me` extension and can also be dismissed manually (handled in `static/js/ui.js`).
+Toast partials are rendered from `templates/base/partials/toast_item.html` and appended to the persistent `#toast-container` div in `base.html` as a `turbo-stream` `append` action. The toast is styled by the custom stylesheet (`static/css/styles.css`); it auto-dismisses after its `data-auto-dismiss` delay and can also be dismissed manually (both handled in `static/js/ui.js`).
 
-### HTMX request detection
+### Turbo request detection
 
-All HTMX-aware endpoints use the `is_htmx_request()` helper from `utils/core/htmx.py`:
+All Turbo-aware endpoints call `fastapi_turbo.accepts_turbo_stream()`:
 
 ```python
-def is_htmx_request(request: Request) -> bool:
-    return request.headers.get("HX-Request") == "true"
+from fastapi_turbo import accepts_turbo_stream, TurboStreamResponse, streams
+
+if accepts_turbo_stream(request):
+    return TurboStreamResponse(streams.replace(new_card_html, target="card-1"))
+return RedirectResponse(url=..., status_code=status.HTTP_303_SEE_OTHER)
 ```
 
-HTMX automatically adds the `HX-Request: true` header to every request it initiates. Non-HTMX form submissions (standard browser POSTs) do not include this header, so they follow the PRG path unchanged.
+Turbo advertises `text/vnd.turbo-stream.html` in its `Accept` header. Detection is a capability flag rather than a preference negotiation: any request that explicitly lists the media type with a non-zero q-value is served a stream, even when `text/html` is ranked higher. Wildcard accepts (`Accept: */*`) and `;q=0` opt-outs keep those clients on the PRG path.

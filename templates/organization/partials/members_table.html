@@ -1,6 +1,7 @@
 
 {# Partial: card-body content for members. Swapped into #members-card-content. #}
 {% from 'base/macros/silhouette.html' import render_silhouette %}
+{# For test_empty_organization_displays_no_members_message, consider only the current user as owner #}
 {% if organization.users|length <= 1 %}
 <p class="text-muted">No members found</p>
 {% else %}
@@ -46,10 +47,7 @@
 
                     {% if ValidPermissions.REMOVE_USER in user_permissions %}
                     <form method="POST" action="{{ url_for('remove_user_from_organization') }}" class="d-inline"
-                          hx-post="{{ url_for('remove_user_from_organization') }}"
-                          hx-target="#members-card-content"
-                          hx-swap="innerHTML"
-                          hx-confirm="Remove {{ member.name }} from this organization?">
+                          data-turbo-confirm="Remove {{ member.name }} from this organization?">
                           {% include 'base/partials/csrf_field.html' %}
                         <input type="hidden" name="user_id" value="{{ member.id }}">
                         <input type="hidden" name="organization_id" value="{{ organization.id }}">
@@ -74,47 +72,3 @@
 {% include 'organization/partials/invitations_list.html' %}
 {% endwith %}
 </ul>
-
-<div id="member-role-modals-container" hx-swap-oob="true">
-{% if ValidPermissions.EDIT_USER_ROLE in user_permissions %}
-  {% for member in organization.users %}
-    <div class="modal fade" id="editUserRoleModal{{ member.id }}" tabindex="-1" aria-labelledby="editUserRoleModalLabel{{ member.id }}" aria-hidden="true">
-      <div class="modal-dialog">
-        <div class="modal-content">
-          <form method="POST" action="{{ url_for('update_user_role') }}"
-                hx-post="{{ url_for('update_user_role') }}"
-                hx-target="#members-card-content"
-                hx-swap="innerHTML">
-                {% include 'base/partials/csrf_field.html' %}
-            <div class="modal-header">
-              <h5 class="modal-title" id="editUserRoleModalLabel{{ member.id }}">Edit Roles for {{ member.name }}</h5>
-              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body">
-              <div class="mb-3">
-                <label class="form-label">Assign Roles</label>
-                {% for role in organization.roles %}
-                  <div class="form-check">
-                    <input class="form-check-input" type="checkbox" name="roles" value="{{ role.id }}"
-                           id="role_{{ member.id }}_{{ role.id }}"
-                           {% if role in member.roles %}checked{% endif %}>
-                    <label class="form-check-label" for="role_{{ member.id }}_{{ role.id }}">
-                      {{ role.name }}
-                    </label>
-                  </div>
-                {% endfor %}
-              </div>
-              <input type="hidden" name="user_id" value="{{ member.id }}">
-              <input type="hidden" name="organization_id" value="{{ organization.id }}">
-            </div>
-            <div class="modal-footer">
-              <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-              <button type="submit" class="btn btn-primary">Save Changes</button>
-            </div>
-          </form>
-        </div>
-      </div>
-    </div>
-  {% endfor %}
-{% endif %}
-</div>

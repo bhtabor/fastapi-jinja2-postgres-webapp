@@ -40,7 +40,7 @@ def test_login_page_exposes_csrf_meta_and_form_field(csrf_login_page: Page):
     expect(page.locator('input[name="csrf_token"]')).to_have_count(1)
 
 
-def test_htmx_login_without_csrf_shows_error_toast(csrf_login_page: Page):
+def test_login_without_csrf_shows_error_toast(csrf_login_page: Page):
     page = csrf_login_page
     page.evaluate(
         """() => {
@@ -58,7 +58,7 @@ def test_htmx_login_without_csrf_shows_error_toast(csrf_login_page: Page):
     expect(toast).to_contain_text("CSRF")
 
 
-def test_htmx_login_with_valid_csrf_succeeds(browser, live_server_csrf: str):
+def test_login_with_valid_csrf_succeeds(browser, live_server_csrf: str):
     context = browser.new_context(viewport={"width": 1280, "height": 720})
     page = context.new_page()
     page.goto(f"{live_server_csrf}/account/login")

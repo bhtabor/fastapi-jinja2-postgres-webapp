@@ -16,9 +16,7 @@
             <ul class="dropdown-menu" aria-labelledby="orgSelect">
                 {% for org in organizations %}
                 <li>
-                    <form method="POST" action="{{ url_for('select_organization', org_id=org.id) }}" class="mb-0"
-                          hx-post="{{ url_for('select_organization', org_id=org.id) }}"
-                          hx-swap="none">
+                    <form method="POST" action="{{ url_for('select_organization', org_id=org.id) }}" class="mb-0">
                           {% include 'base/partials/csrf_field.html' %}
                         <button type="submit" class="dropdown-item {% if selected_org and org.id == selected_org.id %}active{% endif %}">
                             {{ org.name }}
